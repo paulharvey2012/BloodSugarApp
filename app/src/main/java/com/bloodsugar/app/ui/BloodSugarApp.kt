@@ -7,13 +7,19 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.bloodsugar.app.data.Reading
+import com.bloodsugar.app.data.ReadingRepository
 import com.bloodsugar.app.ui.components.AppHeader
+import com.bloodsugar.app.ui.theme.BloodSugarAppTheme
+import kotlinx.coroutines.flow.flowOf
+import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,5 +92,74 @@ fun BloodSugarApp(viewModel: ReadingViewModel) {
                 }
             }
         }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun BloodSugarAppPreview() {
+    BloodSugarAppTheme {
+        val mockRepository = ReadingRepository(mockPreviewDao())
+        val mockViewModel = ReadingViewModel(mockRepository)
+        BloodSugarApp(viewModel = mockViewModel)
+    }
+}
+
+@Preview(showBackground = true, name = "Dark Theme")
+@Composable
+fun BloodSugarAppDarkPreview() {
+    BloodSugarAppTheme(darkTheme = true) {
+        val mockRepository = ReadingRepository(mockPreviewDao())
+        val mockViewModel = ReadingViewModel(mockRepository)
+        BloodSugarApp(viewModel = mockViewModel)
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ReadingCardPreview() {
+    BloodSugarAppTheme {
+        ReadingCard(
+            reading = Reading(
+                id = 1,
+                type = "blood_sugar",
+                value = 120.0,
+                unit = "mg/dL",
+                date = Date(),
+                notes = "Before breakfast"
+            ),
+            onEdit = { },
+            onDelete = { }
+        )
+    }
+}
+
+@Preview(showBackground = true, name = "Ketone Card")
+@Composable
+fun KetoneReadingCardPreview() {
+    BloodSugarAppTheme {
+        ReadingCard(
+            reading = Reading(
+                id = 2,
+                type = "ketone",
+                value = 0.5,
+                unit = "mmol/L",
+                date = Date(),
+                notes = "Morning reading with longer notes to test wrapping"
+            ),
+            onEdit = { },
+            onDelete = { }
+        )
+    }
+}
+
+// Mock DAO for preview purposes
+private fun mockPreviewDao(): com.bloodsugar.app.data.ReadingDao {
+    return object : com.bloodsugar.app.data.ReadingDao {
+        override fun getAllReadings() = flowOf(emptyList<Reading>())
+        override suspend fun insertReading(reading: Reading) {}
+        override suspend fun updateReading(reading: Reading) {}
+        override suspend fun deleteReading(reading: Reading) {}
+        override suspend fun getReadingById(id: Long): Reading? = null
     }
 }

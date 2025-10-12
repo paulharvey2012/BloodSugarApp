@@ -10,8 +10,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.bloodsugar.app.BuildConfig
+import com.bloodsugar.app.ui.theme.BloodSugarAppTheme
 
 @Composable
 fun VersionFooter(modifier: Modifier = Modifier) {
@@ -37,5 +39,21 @@ fun VersionFooter(modifier: Modifier = Modifier) {
                 textAlign = TextAlign.Center
             )
         }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun VersionFooterPreview() {
+    BloodSugarAppTheme {
+        VersionFooter()
+    }
+}
+
+@Preview(showBackground = true, name = "Dark Theme")
+@Composable
+fun VersionFooterDarkPreview() {
+    BloodSugarAppTheme(darkTheme = true) {
+        VersionFooter()
     }
 }

@@ -12,10 +12,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.bloodsugar.app.data.Reading
+import com.bloodsugar.app.data.ReadingRepository
 import com.bloodsugar.app.ui.components.VersionFooter
+import com.bloodsugar.app.ui.theme.BloodSugarAppTheme
+import kotlinx.coroutines.flow.flowOf
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -370,4 +374,84 @@ fun EditReadingDialog(
             }
         }
     )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun HistoryScreenPreview() {
+    BloodSugarAppTheme {
+        // Create a mock repository and viewModel for preview with sample data
+        val mockRepository = ReadingRepository(mockHistoryDao())
+        val mockViewModel = ReadingViewModel(mockRepository)
+        HistoryScreen(viewModel = mockViewModel)
+    }
+}
+
+@Preview(showBackground = true, name = "Dark Theme")
+@Composable
+fun HistoryScreenDarkPreview() {
+    BloodSugarAppTheme(darkTheme = true) {
+        val mockRepository = ReadingRepository(mockHistoryDao())
+        val mockViewModel = ReadingViewModel(mockRepository)
+        HistoryScreen(viewModel = mockViewModel)
+    }
+}
+
+@Preview(showBackground = true, name = "Empty History")
+@Composable
+fun HistoryScreenEmptyPreview() {
+    BloodSugarAppTheme {
+        val mockRepository = ReadingRepository(mockEmptyDao())
+        val mockViewModel = ReadingViewModel(mockRepository)
+        HistoryScreen(viewModel = mockViewModel)
+    }
+}
+
+// Mock DAO with sample data for preview purposes
+private fun mockHistoryDao(): com.bloodsugar.app.data.ReadingDao {
+    val sampleReadings = listOf(
+        Reading(
+            id = 1,
+            type = "blood_sugar",
+            value = 120.0,
+            unit = "mg/dL",
+            date = Date(),
+            notes = "Before breakfast"
+        ),
+        Reading(
+            id = 2,
+            type = "ketone",
+            value = 0.5,
+            unit = "mmol/L",
+            date = Date(System.currentTimeMillis() - 3600000), // 1 hour ago
+            notes = "Morning reading"
+        ),
+        Reading(
+            id = 3,
+            type = "blood_sugar",
+            value = 6.8,
+            unit = "mmol/L",
+            date = Date(System.currentTimeMillis() - 7200000), // 2 hours ago
+            notes = ""
+        )
+    )
+
+    return object : com.bloodsugar.app.data.ReadingDao {
+        override fun getAllReadings() = flowOf(sampleReadings)
+        override suspend fun insertReading(reading: Reading) {}
+        override suspend fun updateReading(reading: Reading) {}
+        override suspend fun deleteReading(reading: Reading) {}
+        override suspend fun getReadingById(id: Long): Reading? = sampleReadings.find { it.id == id }
+    }
+}
+
+// Mock DAO with empty data for preview purposes
+private fun mockEmptyDao(): com.bloodsugar.app.data.ReadingDao {
+    return object : com.bloodsugar.app.data.ReadingDao {
+        override fun getAllReadings() = flowOf(emptyList<Reading>())
+        override suspend fun insertReading(reading: Reading) {}
+        override suspend fun updateReading(reading: Reading) {}
+        override suspend fun deleteReading(reading: Reading) {}
+        override suspend fun getReadingById(id: Long): Reading? = null
+    }
 }

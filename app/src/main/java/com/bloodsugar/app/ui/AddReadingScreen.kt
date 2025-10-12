@@ -10,8 +10,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.bloodsugar.app.data.ReadingRepository
 import com.bloodsugar.app.ui.components.VersionFooter
+import com.bloodsugar.app.ui.theme.BloodSugarAppTheme
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -342,5 +345,37 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
             Spacer(modifier = Modifier.height(32.dp))
             VersionFooter()
         }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun AddReadingScreenPreview() {
+    BloodSugarAppTheme {
+        // Create a mock repository and viewModel for preview
+        val mockRepository = ReadingRepository(mockReadingDao())
+        val mockViewModel = ReadingViewModel(mockRepository)
+        AddReadingScreen(viewModel = mockViewModel)
+    }
+}
+
+@Preview(showBackground = true, name = "Dark Theme")
+@Composable
+fun AddReadingScreenDarkPreview() {
+    BloodSugarAppTheme(darkTheme = true) {
+        val mockRepository = ReadingRepository(mockReadingDao())
+        val mockViewModel = ReadingViewModel(mockRepository)
+        AddReadingScreen(viewModel = mockViewModel)
+    }
+}
+
+// Mock DAO for preview purposes
+private fun mockReadingDao(): com.bloodsugar.app.data.ReadingDao {
+    return object : com.bloodsugar.app.data.ReadingDao {
+        override fun getAllReadings() = kotlinx.coroutines.flow.flowOf(emptyList<com.bloodsugar.app.data.Reading>())
+        override suspend fun insertReading(reading: com.bloodsugar.app.data.Reading) {}
+        override suspend fun updateReading(reading: com.bloodsugar.app.data.Reading) {}
+        override suspend fun deleteReading(reading: com.bloodsugar.app.data.Reading) {}
+        override suspend fun getReadingById(id: Long): com.bloodsugar.app.data.Reading? = null
     }
 }
