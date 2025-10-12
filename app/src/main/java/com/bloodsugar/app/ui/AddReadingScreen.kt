@@ -109,7 +109,7 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        item { 
+        item {
             // Reading Type Selection
             Card(
                 modifier = Modifier.fillMaxWidth()

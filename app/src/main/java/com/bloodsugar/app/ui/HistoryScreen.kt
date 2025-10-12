@@ -48,14 +48,6 @@ fun HistoryScreen(viewModel: ReadingViewModel) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
-            Text(
-                text = "Reading History",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
         items(readings) { reading ->
             ReadingCard(
                 reading = reading,
