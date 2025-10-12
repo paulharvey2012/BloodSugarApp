@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Blood Sugar App</string>
+    <string name="add_reading">Add Reading</string>
+    <string name="blood_sugar">Blood Sugar</string>
+    <string name="ketones">Ketones</string>
+    <string name="history">History</string>
+    <string name="notes">Notes</string>
+    <string name="date">Date</string>
+    <string name="time">Time</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+    <string name="mg_dl">mg/dL</string>
+    <string name="mmol_l">mmol/L</string>
+    <string name="no_readings">No readings yet</string>
+    <string name="add_first_reading">Add your first reading</string>
+</resources>
