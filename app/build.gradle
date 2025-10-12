@@ -1,8 +1,24 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
-    id 'com.google.devtools.ksp'
+    id 'com.google.devtools.ksp' // use KSP instead of KAPT to avoid kapt/JDK module access issues
 }
+
+import java.util.Properties
+
+// Load or create version properties file at project root
+def versionPropsFile = rootProject.file('version.properties')
+def versionProps = new Properties()
+if (versionPropsFile.exists()) {
+    versionProps.load(new FileInputStream(versionPropsFile))
+} else {
+    versionProps.setProperty('VERSION_CODE', '1')
+    versionProps.setProperty('VERSION_NAME', '1.0.0')
+    versionProps.store(new FileOutputStream(versionPropsFile), null)
+}
+
+def versionCodeFromProps = Integer.parseInt(versionProps.getProperty('VERSION_CODE'))
+def versionNameFromProps = versionProps.getProperty('VERSION_NAME')
 
 android {
     namespace 'com.bloodsugar.app'
@@ -12,8 +28,8 @@ android {
         applicationId "com.bloodsugar.app"
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName "1.0.1"
+        versionCode versionCodeFromProps
+        versionName versionNameFromProps
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -42,8 +58,54 @@ android {
         compose true
         buildConfig true
     }
+
+    // Ensure the Compose compiler version matches the Kotlin plugin
     composeOptions {
-        kotlinCompilerExtensionVersion '1.5.4'
+        kotlinCompilerExtensionVersion = '1.5.4'
+    }
+
+    // Ensure version code increments before building
+    tasks.whenTaskAdded { task ->
+        if (task.name.toLowerCase().startsWith('pre')) {
+            task.dependsOn 'incrementVersionCode'
+        }
+    }
+}
+
+// Task to increment VERSION_CODE in version.properties
+task incrementVersionCode {
+    doLast {
+        def props = new Properties()
+        props.load(new FileInputStream(versionPropsFile))
+        // Increment code
+        def code = Integer.parseInt(props.getProperty('VERSION_CODE'))
+        code = code + 1
+        props.setProperty('VERSION_CODE', code.toString())
+
+        // Increment patch in VERSION_NAME (semantic versioning: major.minor.patch)
+        def vn = props.getProperty('VERSION_NAME')
+        if (vn == null || vn.trim() == '') {
+            vn = '1.0.0'
+        }
+        def parts = vn.tokenize('.')
+        if (parts.size() < 3) {
+            // normalize to three parts
+            while (parts.size() < 3) parts << '0'
+        }
+        try {
+            def patch = Integer.parseInt(parts[2])
+            patch = patch + 1
+            parts[2] = patch.toString()
+        } catch(Exception e) {
+            // fallback: append 1
+            parts[2] = '1'
+        }
+        def newVn = parts.join('.')
+        props.setProperty('VERSION_NAME', newVn)
+
+        // store back
+        props.store(new FileOutputStream(versionPropsFile), null)
+        println "Bumped VERSION_CODE to ${code} and VERSION_NAME to ${newVn}"
     }
 }
 
@@ -60,7 +122,13 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0'
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.7.0'
 
-    // Room components with KSP instead of KAPT
+    // Force Kotlin stdlib to the plugin-compatible version
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.20'
+
+    // DataStore for persisting unit preference
+    implementation 'androidx.datastore:datastore-preferences:1.1.0'
+
+    // Room components using KSP (replace kapt with ksp)
     implementation 'androidx.room:room-runtime:2.6.1'
     implementation 'androidx.room:room-ktx:2.6.1'
     ksp 'androidx.room:room-compiler:2.6.1'
@@ -72,4 +140,17 @@ dependencies {
     androidTestImplementation 'androidx.compose.ui:ui-test-junit4'
     debugImplementation 'androidx.compose.ui:ui-tooling'
     debugImplementation 'androidx.compose.ui:ui-test-manifest'
+}
+
+// Force resolution of Kotlin artifacts to 1.9.20 to avoid mixed Kotlin stdlib versions
+configurations.all {
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group == 'org.jetbrains.kotlin') {
+            details.useVersion '1.9.20'
+            details.because 'Align Kotlin stdlib with the Kotlin Gradle plugin (1.9.20) to keep KSP/Room compatible.'
+        }
+    }
+
+    // Force Compose compiler to a version compatible with Kotlin 1.9.20
+    resolutionStrategy.force 'androidx.compose.compiler:compiler:1.5.4'
 }

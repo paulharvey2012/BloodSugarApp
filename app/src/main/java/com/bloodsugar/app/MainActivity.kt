@@ -10,6 +10,8 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.bloodsugar.app.data.AppDatabase
 import com.bloodsugar.app.data.ReadingRepository
+import com.bloodsugar.app.data.UnitPreferences
+import com.bloodsugar.app.data.dataStore
 import com.bloodsugar.app.ui.BloodSugarApp
 import com.bloodsugar.app.ui.ReadingViewModel
 import com.bloodsugar.app.ui.ReadingViewModelFactory
@@ -21,8 +23,10 @@ class MainActivity : ComponentActivity() {
         
         val database = AppDatabase.getDatabase(this)
         val repository = ReadingRepository(database.readingDao())
-        val viewModelFactory = ReadingViewModelFactory(repository)
-        
+        // Provide DataStore-backed UnitPreferences so unit selection persists across app restarts
+        val unitPrefs = UnitPreferences(applicationContext.dataStore)
+        val viewModelFactory = ReadingViewModelFactory(repository, unitPrefs)
+
         setContent {
             BloodSugarAppTheme {
                 Surface(

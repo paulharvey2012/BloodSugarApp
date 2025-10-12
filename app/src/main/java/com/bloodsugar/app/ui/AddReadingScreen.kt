@@ -17,6 +17,7 @@ import com.bloodsugar.app.ui.components.VersionFooter
 import com.bloodsugar.app.ui.theme.BloodSugarAppTheme
 import java.text.SimpleDateFormat
 import java.util.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -25,7 +26,6 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
     var value by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
     var selectedDate by remember { mutableStateOf(Date()) }
-    var selectedUnit by remember { mutableStateOf("mmol/L") }
 
     // Date and Time picker states
     var showDatePicker by remember { mutableStateOf(false) }
@@ -45,6 +45,9 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
 
     val dateFormatter = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
     val timeFormatter = SimpleDateFormat("HH:mm", Locale.getDefault())
+
+    // Read unit preference from ViewModel
+    val selectedUnit by viewModel.unit.collectAsStateWithLifecycle(initialValue = "mmol/L")
 
     // Date Picker Dialog
     if (showDatePicker) {
@@ -130,80 +133,61 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         FilterChip(
-                            onClick = { 
+                            onClick = {
                                 selectedType = 0
+                                // Keep existing unit preference (do not override)
                             },
                             label = { Text("Blood Sugar") },
                             selected = selectedType == 0,
                             modifier = Modifier.weight(1f),
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary
                             )
                         )
                         FilterChip(
-                            onClick = { 
+                            onClick = {
                                 selectedType = 1
-                                selectedUnit = "mmol/L"
+                                // Default unit for ketones is mmol/L
+                                viewModel.setUnit("mmol/L")
                             },
                             label = { Text("Ketones") },
                             selected = selectedType == 1,
                             modifier = Modifier.weight(1f),
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary
                             )
                         )
-                    }
-                }
-            }
-        }
-        
-        // Unit Selection (for Blood Sugar)
-        if (selectedType == 0) {
-            item { 
-                Card(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp)
-                    ) {
-                        Text(
-                            text = "Unit",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            FilterChip(
-                                onClick = { selectedUnit = "mg/dL" },
-                                label = { Text("mg/dL") },
-                                selected = selectedUnit == "mg/dL",
-                                modifier = Modifier.weight(1f),
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                                )
-                            )
-                            FilterChip(
-                                onClick = { selectedUnit = "mmol/L" },
-                                label = { Text("mmol/L") },
-                                selected = selectedUnit == "mmol/L",
-                                modifier = Modifier.weight(1f),
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                                )
-                            )
-                        }
                     }
                 }
             }
         }
 
-        item { 
+        // Unit display (now uses app preference from Settings)
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "Unit",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = selectedUnit,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+
+        item {
             // Value Input
             Card(
                 modifier = Modifier.fillMaxWidth()
@@ -236,7 +220,7 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
             }
         }
         
-        item { 
+        item {
             // Date and Time Selection
             Card(
                 modifier = Modifier.fillMaxWidth()
@@ -280,7 +264,7 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
             }
         }
         
-        item { 
+        item {
             // Notes
             Card(
                 modifier = Modifier.fillMaxWidth()
@@ -304,7 +288,7 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
             }
         }
 
-        item { 
+        item {
             // Save Button
             Button(
                 onClick = {

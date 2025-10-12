@@ -4,11 +4,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -34,15 +34,38 @@ fun BloodSugarApp(viewModel: ReadingViewModel) {
 
         Scaffold(
             topBar = {
+                var menuExpanded by remember { mutableStateOf(false) }
+
                 TopAppBar(
                     title = {
                         Text(
                             text = when (currentDestination?.route) {
                                 "add_reading" -> "Add Reading"
                                 "history" -> "Reading History"
+                                "settings" -> "Settings"
                                 else -> "Add Reading"
                             }
                         )
+                    },
+                    actions = {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Menu")
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false }
+                        ) {
+                            DropdownMenuItem(text = { Text("Settings") }, onClick = {
+                                menuExpanded = false
+                                navController.navigate("settings") {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            })
+                        }
                     }
                 )
             },
@@ -89,6 +112,9 @@ fun BloodSugarApp(viewModel: ReadingViewModel) {
                 }
                 composable("history") {
                     HistoryScreen(viewModel = viewModel)
+                }
+                composable("settings") {
+                    SettingsScreen(viewModel = viewModel)
                 }
             }
         }

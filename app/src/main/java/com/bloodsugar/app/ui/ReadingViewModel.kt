@@ -5,19 +5,47 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.bloodsugar.app.data.Reading
 import com.bloodsugar.app.data.ReadingRepository
+import com.bloodsugar.app.data.UnitPreferences
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.util.Date
 
-class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() {
-    
+class ReadingViewModel(
+    private val repository: ReadingRepository,
+    private val unitPreferences: UnitPreferences? = null
+) : ViewModel() {
+
     val allReadings: Flow<List<Reading>> = repository.getAllReadings()
 
     private val _uiState = MutableStateFlow(ReadingUiState())
     val uiState: StateFlow<ReadingUiState> = _uiState
-    
+
+    // Unit preference: in-memory default, but if UnitPreferences is provided it will be kept in sync
+    private val _unit = MutableStateFlow(UnitPreferences.DEFAULT_UNIT)
+    val unit: StateFlow<String> = _unit
+
+    init {
+        unitPreferences?.let { prefs ->
+            viewModelScope.launch {
+                prefs.unitFlow.collect { value ->
+                    _unit.value = value
+                }
+            }
+        }
+    }
+
+    fun setUnit(newUnit: String) {
+        if (unitPreferences != null) {
+            viewModelScope.launch {
+                unitPreferences.setUnit(newUnit)
+            }
+        } else {
+            _unit.value = newUnit
+        }
+    }
+
     fun addBloodSugarReading(value: Double, date: Date, notes: String, unit: String = "mg/dL") {
         viewModelScope.launch {
             val reading = Reading(
@@ -62,11 +90,11 @@ data class ReadingUiState(
     val errorMessage: String? = null
 )
 
-class ReadingViewModelFactory(private val repository: ReadingRepository) : ViewModelProvider.Factory {
+class ReadingViewModelFactory(private val repository: ReadingRepository, private val unitPreferences: UnitPreferences? = null) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(ReadingViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return ReadingViewModel(repository) as T
+            return ReadingViewModel(repository, unitPreferences) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
