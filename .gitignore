@@ -100,3 +100,10 @@ Desktop.ini
 *.swp
 *.swo
 *~
+
+# Ignore specific generated build output files
+build_debug_output.txt
+build_debug_output2.txt
+build_final.txt
+# Also ignore any other similar build output files
+build_*_output*.txt
