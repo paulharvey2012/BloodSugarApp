@@ -11,6 +11,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.bloodsugar.app.ui.components.VersionFooter
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -131,7 +132,11 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
                             },
                             label = { Text("Blood Sugar") },
                             selected = selectedType == 0,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                            )
                         )
                         FilterChip(
                             onClick = { 
@@ -140,7 +145,11 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
                             },
                             label = { Text("Ketones") },
                             selected = selectedType == 1,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                            )
                         )
                     }
                 }
@@ -169,13 +178,21 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
                                 onClick = { selectedUnit = "mg/dL" },
                                 label = { Text("mg/dL") },
                                 selected = selectedUnit == "mg/dL",
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
                             )
                             FilterChip(
                                 onClick = { selectedUnit = "mmol/L" },
                                 label = { Text("mmol/L") },
                                 selected = selectedUnit == "mmol/L",
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
                             )
                         }
                     }
@@ -318,6 +335,12 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
             ) {
                 Text("Save")
             }
+        }
+
+        // Footer
+        item {
+            Spacer(modifier = Modifier.height(32.dp))
+            VersionFooter()
         }
     }
 }

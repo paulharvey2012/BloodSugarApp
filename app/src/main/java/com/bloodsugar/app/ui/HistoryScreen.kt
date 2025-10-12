@@ -15,6 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.bloodsugar.app.data.Reading
+import com.bloodsugar.app.ui.components.VersionFooter
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -66,6 +67,12 @@ fun HistoryScreen(viewModel: ReadingViewModel) {
                     viewModel.deleteReading(reading)
                 }
             )
+        }
+
+        // Footer
+        item {
+            Spacer(modifier = Modifier.height(8.dp))
+            VersionFooter()
         }
     }
 }
