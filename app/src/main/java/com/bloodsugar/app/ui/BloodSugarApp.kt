@@ -43,6 +43,7 @@ fun BloodSugarApp(viewModel: ReadingViewModel) {
                                 "add_reading" -> "Add Reading"
                                 "history" -> "Reading History"
                                 "settings" -> "Settings"
+                                "help" -> "Help"
                                 else -> "Add Reading"
                             }
                         )
@@ -58,6 +59,17 @@ fun BloodSugarApp(viewModel: ReadingViewModel) {
                             DropdownMenuItem(text = { Text("Settings") }, onClick = {
                                 menuExpanded = false
                                 navController.navigate("settings") {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            })
+
+                            DropdownMenuItem(text = { Text("Help") }, onClick = {
+                                menuExpanded = false
+                                navController.navigate("help") {
                                     popUpTo(navController.graph.findStartDestination().id) {
                                         saveState = true
                                     }
@@ -115,6 +127,9 @@ fun BloodSugarApp(viewModel: ReadingViewModel) {
                 }
                 composable("settings") {
                     SettingsScreen(viewModel = viewModel)
+                }
+                composable("help") {
+                    HelpScreen(viewModel = viewModel)
                 }
             }
         }

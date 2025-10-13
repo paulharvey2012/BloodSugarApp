@@ -3,6 +3,7 @@ package com.bloodsugar.app.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.*
@@ -10,6 +11,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.bloodsugar.app.data.ReadingRepository
@@ -19,7 +24,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun AddReadingScreen(viewModel: ReadingViewModel) {
     var selectedType by remember { mutableStateOf(0) } // 0 for blood sugar, 1 for ketones
@@ -48,6 +53,42 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
 
     // Read unit preference from ViewModel
     val selectedUnit by viewModel.unit.collectAsStateWithLifecycle(initialValue = "mmol/L")
+
+    // Focus handling: when user presses Next on the value field, move focus to notes
+    val notesFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+
+    // Extracted save logic so it can be reused by the Save button and the Notes IME Done action
+    val saveReading: () -> Unit = {
+        if (value.isNotBlank()) {
+            val numericValue = value.toDoubleOrNull()
+            if (numericValue != null) {
+                if (selectedType == 0) {
+                    viewModel.addBloodSugarReading(
+                        value = numericValue,
+                        date = selectedDate,
+                        notes = notes,
+                        unit = selectedUnit
+                    )
+                } else {
+                    viewModel.addKetoneReading(
+                        value = numericValue,
+                        date = selectedDate,
+                        notes = notes,
+                        unit = selectedUnit
+                    )
+                }
+                // Reset form
+                value = ""
+                notes = ""
+                selectedDate = Date()
+            }
+        }
+        // hide keyboard and clear focus after saving
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
 
     // Date Picker Dialog
     if (showDatePicker) {
@@ -188,7 +229,14 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
                             value = value,
                             onValueChange = { value = it },
                             label = { Text("Reading") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Decimal,
+                                imeAction = ImeAction.Next
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onNext = { notesFocusRequester.requestFocus() }
+                            ),
                             modifier = Modifier.weight(1f)
                         )
                         Text(
@@ -261,8 +309,12 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
                         value = notes,
                         onValueChange = { notes = it },
                         label = { Text("Optional notes") },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 3
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(notesFocusRequester),
+                        minLines = 3,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { saveReading() })
                     )
                 }
             }
@@ -271,32 +323,7 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
         item {
             // Save Button
             Button(
-                onClick = {
-                    if (value.isNotBlank()) {
-                        val numericValue = value.toDoubleOrNull()
-                        if (numericValue != null) {
-                            if (selectedType == 0) {
-                                viewModel.addBloodSugarReading(
-                                    value = numericValue,
-                                    date = selectedDate,
-                                    notes = notes,
-                                    unit = selectedUnit
-                                )
-                            } else {
-                                viewModel.addKetoneReading(
-                                    value = numericValue,
-                                    date = selectedDate,
-                                    notes = notes,
-                                    unit = selectedUnit
-                                )
-                            }
-                            // Reset form
-                            value = ""
-                            notes = ""
-                            selectedDate = Date()
-                        }
-                    }
-                },
+                onClick = { saveReading() },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = value.isNotBlank()
             ) {
