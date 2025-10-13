@@ -120,7 +120,7 @@ fun BloodSugarApp(viewModel: ReadingViewModel) {
                 modifier = Modifier.padding(innerPadding)
             ) {
                 composable("add_reading") {
-                    AddReadingScreen(viewModel = viewModel)
+                    AddReadingScreen(viewModel = viewModel, navController = navController)
                 }
                 composable("history") {
                     HistoryScreen(viewModel = viewModel)

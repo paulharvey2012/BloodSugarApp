@@ -2,6 +2,8 @@ package com.bloodsugar.app.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.Icons
@@ -17,16 +19,19 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
+import androidx.navigation.compose.rememberNavController
 import com.bloodsugar.app.data.ReadingRepository
 import com.bloodsugar.app.ui.components.VersionFooter
 import com.bloodsugar.app.ui.theme.BloodSugarAppTheme
 import java.text.SimpleDateFormat
 import java.util.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
-fun AddReadingScreen(viewModel: ReadingViewModel) {
+fun AddReadingScreen(viewModel: ReadingViewModel, navController: NavController) {
     var selectedType by remember { mutableStateOf(0) } // 0 for blood sugar, 1 for ketones
     var value by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
@@ -35,6 +40,17 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
     // Date and Time picker states
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
+
+    // LazyColumn scroll state
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
+    // Scroll to top when this composable is first composed
+    LaunchedEffect(Unit) {
+        coroutineScope.launch {
+            listState.scrollToItem(0)
+        }
+    }
 
     val calendar = Calendar.getInstance()
     calendar.time = selectedDate
@@ -88,6 +104,14 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
         // hide keyboard and clear focus after saving
         focusManager.clearFocus()
         keyboardController?.hide()
+        // Navigate to history screen after saving using same pattern as bottom navigation
+        navController.navigate("history") {
+            popUpTo("add_reading") {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
     }
 
     // Date Picker Dialog
@@ -151,6 +175,7 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
     }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
@@ -346,7 +371,7 @@ fun AddReadingScreenPreview() {
         // Create a mock repository and viewModel for preview
         val mockRepository = ReadingRepository(mockReadingDao())
         val mockViewModel = ReadingViewModel(mockRepository)
-        AddReadingScreen(viewModel = mockViewModel)
+        AddReadingScreen(viewModel = mockViewModel, navController = rememberNavController())
     }
 }
 
@@ -356,7 +381,7 @@ fun AddReadingScreenDarkPreview() {
     BloodSugarAppTheme(darkTheme = true) {
         val mockRepository = ReadingRepository(mockReadingDao())
         val mockViewModel = ReadingViewModel(mockRepository)
-        AddReadingScreen(viewModel = mockViewModel)
+        AddReadingScreen(viewModel = mockViewModel, navController = rememberNavController())
     }
 }
 
