@@ -63,7 +63,36 @@ class BackupService(
     private val autoBackupFileName = "bloodsugar_auto_backup.json"
 
     private val backupDir: File
-        get() = File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp")
+        get() {
+            // Try multiple backup locations for maximum persistence
+            val locations = listOf(
+                // Primary: Downloads folder (survives uninstalls and is user-accessible)
+                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BloodSugarApp"),
+                // Secondary: Documents folder
+                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
+                // Tertiary: External storage root
+                File(Environment.getExternalStorageDirectory(), "BloodSugarApp"),
+                // Fallback: App-specific external storage (gets deleted on uninstall)
+                File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp")
+            )
+
+            // Return the first location that is writable
+            for (location in locations) {
+                try {
+                    if (!location.exists()) {
+                        location.mkdirs()
+                    }
+                    if (location.exists() && location.canWrite()) {
+                        return location
+                    }
+                } catch (e: Exception) {
+                    // Continue to next location
+                }
+            }
+
+            // Final fallback - use app's cache directory
+            return File(context.cacheDir, "BloodSugarApp")
+        }
 
     suspend fun createBackup(includeAutoBackup: Boolean = true): Result<String> = withContext(Dispatchers.IO) {
         try {
@@ -110,18 +139,40 @@ class BackupService(
             val backupFile = if (filePath != null) {
                 File(filePath)
             } else {
-                // Try auto backup first, then manual backup
-                val autoFile = File(backupDir, autoBackupFileName)
-                val manualFile = File(backupDir, backupFileName)
-                when {
-                    autoFile.exists() -> autoFile
-                    manualFile.exists() -> manualFile
-                    else -> return@withContext Result.failure(Exception("No backup file found"))
+                // Search across all possible backup locations for any existing backup
+                val locations = listOf(
+                    File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BloodSugarApp"),
+                    File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
+                    File(Environment.getExternalStorageDirectory(), "BloodSugarApp"),
+                    File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
+                    File(context.cacheDir, "BloodSugarApp")
+                )
+
+                var foundFile: File? = null
+                for (location in locations) {
+                    try {
+                        val autoFile = File(location, autoBackupFileName)
+                        val manualFile = File(location, backupFileName)
+                        when {
+                            autoFile.exists() -> {
+                                foundFile = autoFile
+                                break
+                            }
+                            manualFile.exists() -> {
+                                foundFile = manualFile
+                                break
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // Continue searching other locations
+                    }
                 }
+
+                foundFile ?: return@withContext Result.failure(Exception("No backup file found in any location"))
             }
 
             if (!backupFile.exists()) {
-                return@withContext Result.failure(Exception("Backup file not found"))
+                return@withContext Result.failure(Exception("Backup file not found: ${backupFile.absolutePath}"))
             }
 
             val jsonString = backupFile.readText()
@@ -140,38 +191,68 @@ class BackupService(
 
             Result.success(restoredCount)
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(Exception("Restore failed: ${e.message}", e))
         }
     }
 
     suspend fun hasBackupAvailable(): Boolean = withContext(Dispatchers.IO) {
-        val autoFile = File(backupDir, autoBackupFileName)
-        val manualFile = File(backupDir, backupFileName)
-        autoFile.exists() || manualFile.exists()
+        // Search across all possible backup locations
+        val locations = listOf(
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BloodSugarApp"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
+            File(Environment.getExternalStorageDirectory(), "BloodSugarApp"),
+            File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
+            File(context.cacheDir, "BloodSugarApp")
+        )
+
+        for (location in locations) {
+            try {
+                val autoFile = File(location, autoBackupFileName)
+                val manualFile = File(location, backupFileName)
+                if (autoFile.exists() || manualFile.exists()) {
+                    return@withContext true
+                }
+            } catch (e: Exception) {
+                // Continue searching other locations
+            }
+        }
+        false
     }
 
     suspend fun getBackupInfo(): BackupInfo? = withContext(Dispatchers.IO) {
-        try {
-            val autoFile = File(backupDir, autoBackupFileName)
-            val manualFile = File(backupDir, backupFileName)
+        // Search across all possible backup locations
+        val locations = listOf(
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BloodSugarApp"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
+            File(Environment.getExternalStorageDirectory(), "BloodSugarApp"),
+            File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
+            File(context.cacheDir, "BloodSugarApp")
+        )
 
-            val file = when {
-                autoFile.exists() -> autoFile
-                manualFile.exists() -> manualFile
-                else -> return@withContext null
+        for (location in locations) {
+            try {
+                val autoFile = File(location, autoBackupFileName)
+                val manualFile = File(location, backupFileName)
+
+                val file = when {
+                    autoFile.exists() -> autoFile
+                    manualFile.exists() -> manualFile
+                    else -> continue
+                }
+
+                val jsonString = file.readText()
+                val backup = json.decodeFromString<AppBackup>(jsonString)
+
+                return@withContext BackupInfo(
+                    date = Date(backup.exportDate),
+                    readingCount = backup.readings.size,
+                    filePath = file.absolutePath
+                )
+            } catch (e: Exception) {
+                // Continue searching other locations
             }
-
-            val jsonString = file.readText()
-            val backup = json.decodeFromString<AppBackup>(jsonString)
-
-            BackupInfo(
-                date = Date(backup.exportDate),
-                readingCount = backup.readings.size,
-                filePath = file.absolutePath
-            )
-        } catch (e: Exception) {
-            null
         }
+        null
     }
 
     suspend fun deleteBackup(): Result<Boolean> = withContext(Dispatchers.IO) {
