@@ -166,26 +166,6 @@ fun AddReadingScreen(viewModel: ReadingViewModel) {
             }
         }
 
-        // Unit display (now uses app preference from Settings)
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Text(
-                        text = "Unit",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = selectedUnit,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-        }
 
         item {
             // Value Input
