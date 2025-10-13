@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- Blood drop shape -->
+    <path
+        android:fillColor="#E53935"
+        android:pathData="M12,2c-2,0 -4,2 -4,4c0,2 2,6 4,8c2,-2 4,-6 4,-8C16,4 14,2 12,2z"/>
+
+    <!-- Medical cross -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M11.5,5h1v4h-1z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M10,6.5h4v1h-4z"/>
+
+    <!-- Glucose meter -->
+    <path
+        android:fillColor="#2196F3"
+        android:pathData="M8,16h8c1,0 2,1 2,2v2c0,1 -1,2 -2,2H8c-1,0 -2,-1 -2,-2v-2C6,17 7,16 8,16z"/>
+
+    <!-- Screen -->
+    <path
+        android:fillColor="#E8F5E8"
+        android:pathData="M9,17h6v2H9z"/>
+
+</vector>
