@@ -8,6 +8,9 @@ interface ReadingDao {
     @Query("SELECT * FROM readings ORDER BY date DESC")
     fun getAllReadings(): Flow<List<Reading>>
 
+    @Query("SELECT * FROM readings ORDER BY date DESC")
+    suspend fun getAllReadingsForBackup(): List<Reading>
+
     @Insert
     suspend fun insertReading(reading: Reading)
 

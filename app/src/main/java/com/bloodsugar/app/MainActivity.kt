@@ -11,6 +11,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.bloodsugar.app.data.AppDatabase
 import com.bloodsugar.app.data.ReadingRepository
 import com.bloodsugar.app.data.UnitPreferences
+import com.bloodsugar.app.data.BackupService
 import com.bloodsugar.app.data.dataStore
 import com.bloodsugar.app.ui.BloodSugarApp
 import com.bloodsugar.app.ui.ReadingViewModel
@@ -25,7 +26,9 @@ class MainActivity : ComponentActivity() {
         val repository = ReadingRepository(database.readingDao())
         // Provide DataStore-backed UnitPreferences so unit selection persists across app restarts
         val unitPrefs = UnitPreferences(applicationContext.dataStore)
-        val viewModelFactory = ReadingViewModelFactory(repository, unitPrefs)
+        // Initialize BackupService for data persistence across reinstalls
+        val backupService = BackupService(applicationContext, repository)
+        val viewModelFactory = ReadingViewModelFactory(repository, unitPrefs, backupService)
 
         setContent {
             BloodSugarAppTheme {

@@ -8,6 +8,10 @@ class ReadingRepository(private val readingDao: ReadingDao) {
         return readingDao.getAllReadings()
     }
 
+    suspend fun getAllReadingsForBackup(): List<Reading> {
+        return readingDao.getAllReadingsForBackup()
+    }
+
     suspend fun insertReading(reading: Reading) {
         readingDao.insertReading(reading)
     }

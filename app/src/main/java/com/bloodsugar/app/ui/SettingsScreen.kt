@@ -17,6 +17,22 @@ import com.bloodsugar.app.data.UnitPreferences
 @Composable
 fun SettingsScreen(viewModel: ReadingViewModel) {
     val unit by viewModel.unit.collectAsStateWithLifecycle(initialValue = UnitPreferences.DEFAULT_UNIT)
+    val backupState by viewModel.backupState.collectAsStateWithLifecycle()
+
+    // Show snackbar for messages
+    backupState.message?.let { message ->
+        LaunchedEffect(message) {
+            // You can add SnackbarHost here if needed
+            viewModel.clearMessage()
+        }
+    }
+
+    backupState.error?.let { error ->
+        LaunchedEffect(error) {
+            // You can add error SnackbarHost here if needed
+            viewModel.clearMessage()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -24,6 +40,7 @@ fun SettingsScreen(viewModel: ReadingViewModel) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Unit Selection Card
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(text = "Default Unit", style = MaterialTheme.typography.titleMedium)
@@ -53,10 +70,160 @@ fun SettingsScreen(viewModel: ReadingViewModel) {
             }
         }
 
-        // Add more settings here later
+        // Data Backup & Restore Card
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Data Management",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Keep your readings safe across app reinstalls",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Backup Status
+                if (backupState.hasBackupAvailable) {
+                    backupState.lastBackupInfo?.let { backupInfo ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Last backup:",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    text = "${backupInfo.readingCount} readings",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = java.text.SimpleDateFormat("MMM dd, yyyy HH:mm", java.util.Locale.getDefault())
+                                        .format(backupInfo.date),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                } else {
+                    Text(
+                        text = "No backup available",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+
+                // Backup Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Create Backup Button
+                    Button(
+                        onClick = { viewModel.createBackup() },
+                        enabled = !backupState.isLoading,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (backupState.isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text("Backup Data")
+                        }
+                    }
+
+                    // Restore Button (only if backup available)
+                    if (backupState.hasBackupAvailable) {
+                        OutlinedButton(
+                            onClick = { viewModel.restoreFromBackup() },
+                            enabled = !backupState.isLoading,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Restore")
+                        }
+                    }
+                }
+
+                // Delete backup button (only if backup available)
+                if (backupState.hasBackupAvailable) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextButton(
+                        onClick = { viewModel.deleteBackup() },
+                        enabled = !backupState.isLoading
+                    ) {
+                        Text(
+                            "Delete Backup",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Info about automatic backups
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "ℹ️ Automatic Backup",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = "Your data is automatically backed up whenever you add, edit, or delete readings. This backup is preserved when you uninstall and reinstall the app.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
+            }
+        }
+
+        // Status Messages
+        backupState.message?.let { message ->
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                )
+            ) {
+                Text(
+                    text = message,
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+
+        backupState.error?.let { error ->
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer
+                )
+            ) {
+                Text(
+                    text = error,
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.weight(1f))
-
         VersionFooter()
     }
 }
@@ -67,6 +234,7 @@ fun SettingsScreenPreview() {
     BloodSugarAppTheme {
         val mockDao = object : com.bloodsugar.app.data.ReadingDao {
             override fun getAllReadings() = kotlinx.coroutines.flow.flowOf(emptyList<Reading>())
+            override suspend fun getAllReadingsForBackup(): List<Reading> = emptyList()
             override suspend fun insertReading(reading: Reading) {}
             override suspend fun updateReading(reading: Reading) {}
             override suspend fun deleteReading(reading: Reading) {}

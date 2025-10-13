@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.serialization' // Add serialization plugin
     id 'com.google.devtools.ksp' // use KSP instead of KAPT to avoid kapt/JDK module access issues
 }
 
@@ -127,6 +128,9 @@ dependencies {
 
     // DataStore for persisting unit preference
     implementation 'androidx.datastore:datastore-preferences:1.1.0'
+
+    // Kotlin Serialization for JSON backup/restore
+    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0'
 
     // Room components using KSP (replace kapt with ksp)
     implementation 'androidx.room:room-runtime:2.6.1'

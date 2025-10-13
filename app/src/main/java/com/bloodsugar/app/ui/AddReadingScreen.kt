@@ -389,6 +389,7 @@ fun AddReadingScreenDarkPreview() {
 private fun mockReadingDao(): com.bloodsugar.app.data.ReadingDao {
     return object : com.bloodsugar.app.data.ReadingDao {
         override fun getAllReadings() = kotlinx.coroutines.flow.flowOf(emptyList<com.bloodsugar.app.data.Reading>())
+        override suspend fun getAllReadingsForBackup(): List<com.bloodsugar.app.data.Reading> = emptyList()
         override suspend fun insertReading(reading: com.bloodsugar.app.data.Reading) {}
         override suspend fun updateReading(reading: com.bloodsugar.app.data.Reading) {}
         override suspend fun deleteReading(reading: com.bloodsugar.app.data.Reading) {}

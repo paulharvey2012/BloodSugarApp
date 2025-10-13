@@ -51,6 +51,7 @@ fun HelpScreenPreview() {
     BloodSugarAppTheme {
         val mockDao = object : com.bloodsugar.app.data.ReadingDao {
             override fun getAllReadings() = kotlinx.coroutines.flow.flowOf(emptyList<Reading>())
+            override suspend fun getAllReadingsForBackup(): List<Reading> = emptyList()
             override suspend fun insertReading(reading: Reading) {}
             override suspend fun updateReading(reading: Reading) {}
             override suspend fun deleteReading(reading: Reading) {}

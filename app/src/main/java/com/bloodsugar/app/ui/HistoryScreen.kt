@@ -438,6 +438,7 @@ private fun mockHistoryDao(): com.bloodsugar.app.data.ReadingDao {
 
     return object : com.bloodsugar.app.data.ReadingDao {
         override fun getAllReadings() = flowOf(sampleReadings)
+        override suspend fun getAllReadingsForBackup(): List<Reading> = sampleReadings
         override suspend fun insertReading(reading: Reading) {}
         override suspend fun updateReading(reading: Reading) {}
         override suspend fun deleteReading(reading: Reading) {}
@@ -449,6 +450,7 @@ private fun mockHistoryDao(): com.bloodsugar.app.data.ReadingDao {
 private fun mockEmptyDao(): com.bloodsugar.app.data.ReadingDao {
     return object : com.bloodsugar.app.data.ReadingDao {
         override fun getAllReadings() = flowOf(emptyList<Reading>())
+        override suspend fun getAllReadingsForBackup(): List<Reading> = emptyList()
         override suspend fun insertReading(reading: Reading) {}
         override suspend fun updateReading(reading: Reading) {}
         override suspend fun deleteReading(reading: Reading) {}
