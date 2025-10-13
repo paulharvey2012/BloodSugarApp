@@ -14,6 +14,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.bloodsugar.app.ImportInvoker
 import com.bloodsugar.app.data.Reading
 import com.bloodsugar.app.data.ReadingRepository
 import com.bloodsugar.app.ui.components.AppHeader
@@ -28,11 +29,28 @@ fun BloodSugarApp(viewModel: ReadingViewModel) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
+    // Snackbar host for showing backup messages/errors
+    val snackbarHostState = remember { SnackbarHostState() }
+    val backupState by viewModel.backupState.collectAsState()
+
+    // Show snackbar when message or error appears; then clear it from the ViewModel
+    LaunchedEffect(backupState.message, backupState.error) {
+        backupState.message?.let { msg ->
+            snackbarHostState.showSnackbar(msg, duration = SnackbarDuration.Short)
+            viewModel.clearMessage()
+        }
+        backupState.error?.let { err ->
+            snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Long)
+            viewModel.clearMessage()
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         // Header at the very top
         AppHeader()
 
         Scaffold(
+            snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             topBar = {
                 var menuExpanded by remember { mutableStateOf(false) }
 
@@ -76,6 +94,12 @@ fun BloodSugarApp(viewModel: ReadingViewModel) {
                                     launchSingleTop = true
                                     restoreState = true
                                 }
+                            })
+
+                            // Import backup option (invokes Activity file picker via ImportInvoker)
+                            DropdownMenuItem(text = { Text("Import Backup") }, onClick = {
+                                menuExpanded = false
+                                ImportInvoker.launcher?.invoke()
                             })
                         }
                     }

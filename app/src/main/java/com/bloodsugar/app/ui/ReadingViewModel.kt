@@ -24,6 +24,7 @@ class ReadingViewModel(
     val allReadings: Flow<List<Reading>> = repository.getAllReadings()
 
     private val _uiState = MutableStateFlow(ReadingUiState())
+    @Suppress("unused")
     val uiState: StateFlow<ReadingUiState> = _uiState
 
     // Unit preference: in-memory default, but if UnitPreferences is provided it will be kept in sync
@@ -53,12 +54,25 @@ class ReadingViewModel(
     private fun checkForExistingBackups() {
         viewModelScope.launch {
             backupService?.let { service ->
-                val hasBackup = service.hasBackupAvailable()
-                val backupInfo = service.getBackupInfo()
-                _backupState.value = _backupState.value.copy(
-                    hasBackupAvailable = hasBackup,
-                    lastBackupInfo = backupInfo
-                )
+                try {
+                    val hasBackup = service.hasBackupAvailable()
+                    val backupInfo = service.getBackupInfo()
+                    _backupState.value = _backupState.value.copy(
+                        hasBackupAvailable = hasBackup,
+                        lastBackupInfo = backupInfo
+                    )
+                } catch (_: SecurityException) {
+                    // Surface permission denied to the UI so user can take action
+                    _backupState.value = _backupState.value.copy(
+                        hasBackupAvailable = false,
+                        error = "Permission denied while accessing backups. Please grant storage permission or pick the backup file manually."
+                    )
+                } catch (_: Exception) {
+                    // Non-permission failures should not crash startup
+                    _backupState.value = _backupState.value.copy(
+                        hasBackupAvailable = false
+                    )
+                }
             }
         }
     }
@@ -75,24 +89,40 @@ class ReadingViewModel(
                 if (shouldRestore) {
                     // Database is empty, try to auto-restore from backup
                     backupService?.let { service ->
-                        if (service.hasBackupAvailable()) {
-                            val result = service.restoreFromBackup()
-                            result.onSuccess { count ->
-                                if (count > 0) {
-                                    _backupState.value = _backupState.value.copy(
-                                        message = "Automatically restored $count readings from previous installation"
-                                    )
+                        try {
+                            if (service.hasBackupAvailable()) {
+                                val result = service.restoreFromBackup()
+                                result.onSuccess { count ->
+                                    if (count > 0) {
+                                        _backupState.value = _backupState.value.copy(
+                                            message = "Automatically restored $count readings from previous installation",
+                                            hasBackupAvailable = true
+                                        )
+                                    }
+                                }.onFailure { error ->
+                                    // If restore failed due to permissions, surface a clear message
+                                    val msg = error.message ?: "Unknown error"
+                                    if (msg.contains("Permission denied", ignoreCase = true)) {
+                                        _backupState.value = _backupState.value.copy(
+                                            error = "Auto-restore failed due to missing storage permission. Please grant storage permission or import a backup file manually."
+                                        )
+                                    } else {
+                                        _backupState.value = _backupState.value.copy(
+                                            error = "Auto-restore failed: $msg"
+                                        )
+                                    }
                                 }
-                            }.onFailure { error ->
-                                // Log but don't show error to user during auto-restore
-                                _backupState.value = _backupState.value.copy(
-                                    error = "Auto-restore failed: ${error.message}"
-                                )
                             }
+                        } catch (_: SecurityException) {
+                            _backupState.value = _backupState.value.copy(
+                                error = "Auto-restore failed: permission denied while accessing backups. Please grant storage permission or import the backup manually."
+                            )
+                        } catch (_: Exception) {
+                            // Log or ignore - don't disrupt startup
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 // Silently fail - don't disrupt app startup
             }
         }
@@ -169,10 +199,18 @@ class ReadingViewModel(
                     )
                     checkForExistingBackups()
                 }.onFailure { error ->
-                    _backupState.value = _backupState.value.copy(
-                        isLoading = false,
-                        error = "Failed to create backup: ${error.message}"
-                    )
+                    val msg = error.message ?: "Unknown error"
+                    if (msg.contains("Permission denied", ignoreCase = true)) {
+                        _backupState.value = _backupState.value.copy(
+                            isLoading = false,
+                            error = "Failed to create backup due to missing storage permission. Please grant permission or export the backup manually."
+                        )
+                    } else {
+                        _backupState.value = _backupState.value.copy(
+                            isLoading = false,
+                            error = "Failed to create backup: $msg"
+                        )
+                    }
                 }
             }
         }
@@ -182,7 +220,12 @@ class ReadingViewModel(
         viewModelScope.launch {
             try {
                 backupService?.createBackup(includeAutoBackup = true)
-            } catch (e: Exception) {
+            } catch (_: SecurityException) {
+                // permission denied - quietly ignore automatic backups but surface state elsewhere
+                _backupState.value = _backupState.value.copy(
+                    error = "Automatic backup skipped: permission denied for storage."
+                )
+            } catch (_: Exception) {
                 // Silently fail - don't disrupt normal app operation
             }
         }
@@ -193,16 +236,78 @@ class ReadingViewModel(
             _backupState.value = _backupState.value.copy(isLoading = true)
 
             backupService?.let { service ->
-                val result = service.restoreFromBackup()
-                result.onSuccess { count ->
+                try {
+                    val result = service.restoreFromBackup()
+                    result.onSuccess { count ->
+                        _backupState.value = _backupState.value.copy(
+                            isLoading = false,
+                            message = "Successfully restored $count readings from backup",
+                            hasBackupAvailable = count > 0
+                        )
+                    }.onFailure { error ->
+                        val msg = error.message ?: "Unknown error"
+                        if (msg.contains("Permission denied", ignoreCase = true)) {
+                            _backupState.value = _backupState.value.copy(
+                                isLoading = false,
+                                error = "Failed to restore backup: permission denied while accessing backup. Please grant storage permission or import the backup file using the import option."
+                            )
+                        } else {
+                            _backupState.value = _backupState.value.copy(
+                                isLoading = false,
+                                error = "Failed to restore backup: $msg"
+                            )
+                        }
+                    }
+                } catch (_: SecurityException) {
                     _backupState.value = _backupState.value.copy(
                         isLoading = false,
-                        message = "Successfully restored $count readings from backup"
+                        error = "Failed to restore backup: permission denied while accessing backup. Please grant storage permission or import the backup file using the import option."
                     )
-                }.onFailure { error ->
+                } catch (_: Exception) {
                     _backupState.value = _backupState.value.copy(
                         isLoading = false,
-                        error = "Failed to restore backup: ${error.message}"
+                        error = "Failed to restore backup: ${'$'}{(null as Exception?)?.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    fun restoreFromUri(uri: android.net.Uri) {
+        viewModelScope.launch {
+            _backupState.value = _backupState.value.copy(isLoading = true)
+            backupService?.let { service ->
+                try {
+                    val result = service.restoreFromUri(uri)
+                    result.onSuccess { count ->
+                        _backupState.value = _backupState.value.copy(
+                            isLoading = false,
+                            message = "Successfully restored $count readings from imported backup",
+                            hasBackupAvailable = count > 0
+                        )
+                    }.onFailure { error ->
+                        val msg = error.message ?: "Unknown error"
+                        if (msg.contains("Permission denied", ignoreCase = true)) {
+                            _backupState.value = _backupState.value.copy(
+                                isLoading = false,
+                                error = "Failed to restore imported backup: permission denied while accessing the file."
+                            )
+                        } else {
+                            _backupState.value = _backupState.value.copy(
+                                isLoading = false,
+                                error = "Failed to restore imported backup: $msg"
+                            )
+                        }
+                    }
+                } catch (_: SecurityException) {
+                    _backupState.value = _backupState.value.copy(
+                        isLoading = false,
+                        error = "Failed to restore imported backup: permission denied while accessing the file."
+                    )
+                } catch (_: Exception) {
+                    _backupState.value = _backupState.value.copy(
+                        isLoading = false,
+                        error = "Failed to restore imported backup: ${'$'}{(null as Exception?)?.message}"
                     )
                 }
             }
@@ -212,17 +317,24 @@ class ReadingViewModel(
     fun deleteBackup() {
         viewModelScope.launch {
             backupService?.let { service ->
-                val result = service.deleteBackup()
-                result.onSuccess { deleted ->
+                val result: kotlin.Result<Boolean> = service.deleteBackup()
+                result.onSuccess { deleted: Boolean ->
                     _backupState.value = _backupState.value.copy(
                         hasBackupAvailable = false,
                         lastBackupInfo = null,
                         message = if (deleted) "Backup deleted successfully" else "No backup found to delete"
                     )
-                }.onFailure { error ->
-                    _backupState.value = _backupState.value.copy(
-                        error = "Failed to delete backup: ${error.message}"
-                    )
+                }.onFailure { error: Throwable ->
+                    val msg = error.message ?: "Unknown error"
+                    if (msg.contains("Permission denied", ignoreCase = true)) {
+                        _backupState.value = _backupState.value.copy(
+                            error = "Failed to delete backup: permission denied while accessing backup files."
+                        )
+                    } else {
+                        _backupState.value = _backupState.value.copy(
+                            error = "Failed to delete backup: ${'$'}{error.message}"
+                        )
+                    }
                 }
             }
         }

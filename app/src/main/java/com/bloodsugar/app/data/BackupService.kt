@@ -1,16 +1,22 @@
+@file:OptIn(InternalSerializationApi::class)
+
 package com.bloodsugar.app.data
 
+import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.decodeFromString
 import java.io.File
-import java.text.SimpleDateFormat
+import java.io.InputStream
 import java.util.*
 
 @Serializable
@@ -61,54 +67,148 @@ class BackupService(
     private val json = Json { prettyPrint = true }
     private val backupFileName = "bloodsugar_backup.json"
     private val autoBackupFileName = "bloodsugar_auto_backup.json"
+    private val backupFolderName = "BloodSugarApp"
+    private val TAG = "BackupService"
 
-    private val backupDir: File
-        get() {
-            // Try multiple backup locations for maximum persistence
-            val locations = listOf(
-                // Primary: Downloads folder (survives uninstalls and is user-accessible)
-                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BloodSugarApp"),
-                // Secondary: Documents folder
-                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
-                // Tertiary: External storage root
-                File(Environment.getExternalStorageDirectory(), "BloodSugarApp"),
-                // Fallback: App-specific external storage (gets deleted on uninstall)
-                File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp")
-            )
+    // App-specific external folder (deleted on uninstall) - used as fallback
+    private val appExternalFolder: File?
+        get() = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)?.let { File(it, backupFolderName) }
 
-            // Return the first location that is writable
-            for (location in locations) {
-                try {
-                    if (!location.exists()) {
-                        location.mkdirs()
-                    }
-                    if (location.exists() && location.canWrite()) {
-                        return location
-                    }
-                } catch (e: Exception) {
-                    // Continue to next location
+    // Cache fallback
+    private val cacheFolder: File
+        get() = File(context.cacheDir, backupFolderName)
+
+    private suspend fun writeStringToPublicDownloads(fileName: String, content: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = context.contentResolver
+                val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                // Check if file already exists
+                val existing = findMediaStoreUriByName(fileName)
+                if (existing != null) {
+                    // Overwrite existing
+                    resolver.openOutputStream(existing)?.use { out ->
+                        out.write(content.toByteArray())
+                    } ?: return@withContext false
+                    return@withContext true
                 }
-            }
 
-            // Final fallback - use app's cache directory
-            return File(context.cacheDir, "BloodSugarApp")
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/$backupFolderName")
+                }
+
+                val uri = resolver.insert(collection, values) ?: return@withContext false
+                resolver.openOutputStream(uri)?.use { out ->
+                    out.write(content.toByteArray())
+                } ?: return@withContext false
+
+                return@withContext true
+            } else {
+                // Pre-Q: write directly to public Download folder (requires WRITE_EXTERNAL_STORAGE on API<=28)
+                val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val folder = File(downloads, backupFolderName)
+                if (!folder.exists()) folder.mkdirs()
+                val file = File(folder, fileName)
+                file.writeText(content)
+                return@withContext true
+            }
+        } catch (e: SecurityException) {
+            // Permission denied - rethrow so callers can handle and surface helpful UI
+            Log.e(TAG, "Permission denied while writing to public Downloads: ${e.message}")
+            throw e
+        } catch (_: Exception) {
+            // Other IO failures - return false so caller will use fallbacks
+            Log.w(TAG, "Failed to write to public Downloads")
+            return@withContext false
         }
+    }
+
+    private fun findMediaStoreUriByName(fileName: String): Uri? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        val resolver = context.contentResolver
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
+        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
+        val selectionArgs = arrayOf(fileName)
+        resolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(idIndex)
+                return Uri.withAppendedPath(collection, id.toString())
+            }
+        }
+        return null
+    }
+
+    // Search for a backup either in MediaStore (public Downloads) or filesystem fallbacks
+    private fun findBackupSource(): Pair<File?, Uri?> {
+        // 1) Look in MediaStore (modern, persistent across uninstall)
+        try {
+            val mediaUri = findMediaStoreUriByName(autoBackupFileName) ?: findMediaStoreUriByName(backupFileName)
+            if (mediaUri != null) return Pair(null, mediaUri)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission denied while querying MediaStore: ${e.message}")
+            throw e
+        } catch (_: Exception) {
+            Log.w(TAG, "Failed while querying MediaStore")
+            // continue to other fallbacks
+        }
+
+        // 2) Look in public Downloads folder (pre-Q filesystem)
+        try {
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val folder = File(downloads, backupFolderName)
+            val autoFile = File(folder, autoBackupFileName)
+            val manualFile = File(folder, backupFileName)
+            if (autoFile.exists()) return Pair(autoFile, null)
+            if (manualFile.exists()) return Pair(manualFile, null)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission denied while accessing public Downloads folder: ${e.message}")
+            throw e
+        } catch (_: Exception) {
+            Log.w(TAG, "Failed while accessing public Downloads folder")
+        }
+
+        // 3) Look in app-specific external folder
+        try {
+            appExternalFolder?.let { folder ->
+                if (!folder.exists()) folder.mkdirs()
+                val autoFile = File(folder, autoBackupFileName)
+                val manualFile = File(folder, backupFileName)
+                if (autoFile.exists()) return Pair(autoFile, null)
+                if (manualFile.exists()) return Pair(manualFile, null)
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission denied while accessing app external folder: ${e.message}")
+            throw e
+        } catch (_: Exception) {
+            Log.w(TAG, "Failed while accessing app external folder")
+        }
+
+        // 4) Look in cache
+        try {
+            val autoFile = File(cacheFolder, autoBackupFileName)
+            val manualFile = File(cacheFolder, backupFileName)
+            if (autoFile.exists()) return Pair(autoFile, null)
+            if (manualFile.exists()) return Pair(manualFile, null)
+        } catch (_: Exception) {
+            Log.w(TAG, "Failed while accessing cache folder")
+        }
+
+        return Pair(null, null)
+    }
 
     suspend fun createBackup(includeAutoBackup: Boolean = true): Result<String> = withContext(Dispatchers.IO) {
         try {
-            // Ensure backup directory exists
-            if (!backupDir.exists()) {
-                backupDir.mkdirs()
-            }
-
-            // Get all readings from database using direct method (not Flow)
+            // Prepare backup data
             val readingsList = try {
                 repository.getAllReadingsForBackup()
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 emptyList()
             }
 
-            // Create backup data
             val backupReadings = readingsList.map { ReadingBackup.fromReading(it) }
             val backup = AppBackup(
                 exportDate = System.currentTimeMillis(),
@@ -116,19 +216,46 @@ class BackupService(
                 readings = backupReadings
             )
 
-            // Write manual backup
-            val backupFile = File(backupDir, backupFileName)
             val jsonString = json.encodeToString(backup)
-            backupFile.writeText(jsonString)
 
-            // Write auto backup if requested
-            if (includeAutoBackup) {
-                val autoBackupFile = File(backupDir, autoBackupFileName)
-                autoBackupFile.writeText(jsonString)
+            // Try to write to public Downloads (MediaStore or public folder)
+            val wrotePublic = try {
+                writeStringToPublicDownloads(if (includeAutoBackup) autoBackupFileName else backupFileName, jsonString)
+            } catch (e: SecurityException) {
+                // Let caller know this was a permission issue
+                Log.e(TAG, "Permission denied while writing public backup: ${e.message}")
+                return@withContext Result.failure(Exception("Permission denied while writing public backup: ${e.message}", e))
             }
 
-            // Return success with count
-            Result.success("Backup created with ${backupReadings.size} readings at: ${backupFile.absolutePath}")
+            // Also write fallback copies to app-specific external and cache so the app can access them
+            try {
+                appExternalFolder?.let { folder ->
+                    if (!folder.exists()) folder.mkdirs()
+                    val manualFile = File(folder, backupFileName)
+                    manualFile.writeText(jsonString)
+                    if (includeAutoBackup) {
+                        val autoFile = File(folder, autoBackupFileName)
+                        autoFile.writeText(jsonString)
+                    }
+                }
+            } catch (_: Exception) {
+                // ignore fallback write failures
+            }
+
+            if (wrotePublic) {
+                return@withContext Result.success("Backup created with ${backupReadings.size} readings in public Downloads")
+            }
+
+            // If public write failed, try writing to app-specific external or cache
+            try {
+                val destFolder = appExternalFolder ?: cacheFolder
+                if (!destFolder.exists()) destFolder.mkdirs()
+                val destFile = File(destFolder, if (includeAutoBackup) autoBackupFileName else backupFileName)
+                destFile.writeText(jsonString)
+                return@withContext Result.success("Backup created with ${backupReadings.size} readings at: ${destFile.absolutePath} (note: saved to app storage, may be removed on uninstall)")
+            } catch (e: Exception) {
+                return@withContext Result.failure(Exception("Failed to write backup: ${e.message}", e))
+            }
         } catch (e: Exception) {
             Result.failure(Exception("Backup failed: ${e.message}", e))
         }
@@ -136,142 +263,341 @@ class BackupService(
 
     suspend fun restoreFromBackup(filePath: String? = null): Result<Int> = withContext(Dispatchers.IO) {
         try {
-            val backupFile = if (filePath != null) {
-                File(filePath)
+            val (file, uri) = if (filePath != null) {
+                Pair(File(filePath), null)
             } else {
-                // Search across all possible backup locations for any existing backup
-                val locations = listOf(
-                    File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BloodSugarApp"),
-                    File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
-                    File(Environment.getExternalStorageDirectory(), "BloodSugarApp"),
-                    File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
-                    File(context.cacheDir, "BloodSugarApp")
-                )
+                findBackupSource()
+            }
 
-                var foundFile: File? = null
-                for (location in locations) {
+            val jsonString: String = when {
+                uri != null -> {
+                    // Read from MediaStore
+                    val input: InputStream = try {
+                        context.contentResolver.openInputStream(uri)
+                            ?: return@withContext Result.failure(Exception("Unable to open backup input stream"))
+                    } catch (e: SecurityException) {
+                        Log.e(TAG, "Permission denied while opening backup Uri: ${e.message}")
+                        return@withContext Result.failure(Exception("Permission denied while accessing backup Uri: ${e.message}", e))
+                    }
+                    input.bufferedReader().use { it.readText() }
+                }
+                file != null -> {
+                    if (!file.exists()) return@withContext Result.failure(Exception("Backup file not found at ${file.absolutePath}"))
                     try {
-                        val autoFile = File(location, autoBackupFileName)
-                        val manualFile = File(location, backupFileName)
-                        when {
-                            autoFile.exists() -> {
-                                foundFile = autoFile
-                                break
-                            }
-                            manualFile.exists() -> {
-                                foundFile = manualFile
-                                break
-                            }
-                        }
-                    } catch (e: Exception) {
-                        // Continue searching other locations
+                        file.readText()
+                    } catch (e: SecurityException) {
+                        Log.e(TAG, "Permission denied while reading backup file: ${e.message}")
+                        return@withContext Result.failure(Exception("Permission denied while reading backup file: ${e.message}", e))
                     }
                 }
-
-                foundFile ?: return@withContext Result.failure(Exception("No backup file found in any location"))
+                else -> return@withContext Result.failure(Exception("No backup file found in any location"))
             }
 
-            if (!backupFile.exists()) {
-                return@withContext Result.failure(Exception("Backup file not found: ${backupFile.absolutePath}"))
-            }
+            val backup = tryParseAppBackup(jsonString)
 
-            val jsonString = backupFile.readText()
-            val backup = json.decodeFromString<AppBackup>(jsonString)
-
-            // Restore readings to database
             var restoredCount = 0
             backup.readings.forEach { backupReading ->
                 try {
                     repository.insertReading(backupReading.toReading())
                     restoredCount++
-                } catch (e: Exception) {
-                    // Log error but continue with other readings
+                } catch (_: Exception) {
+                    // continue
                 }
             }
 
             Result.success(restoredCount)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Restore failed due to permission error: ${e.message}")
+            Result.failure(Exception("Restore failed: permission denied - ${e.message}", e))
         } catch (e: Exception) {
             Result.failure(Exception("Restore failed: ${e.message}", e))
         }
     }
 
-    suspend fun hasBackupAvailable(): Boolean = withContext(Dispatchers.IO) {
-        // Search across all possible backup locations
-        val locations = listOf(
-            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BloodSugarApp"),
-            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
-            File(Environment.getExternalStorageDirectory(), "BloodSugarApp"),
-            File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
-            File(context.cacheDir, "BloodSugarApp")
-        )
-
-        for (location in locations) {
-            try {
-                val autoFile = File(location, autoBackupFileName)
-                val manualFile = File(location, backupFileName)
-                if (autoFile.exists() || manualFile.exists()) {
-                    return@withContext true
-                }
-            } catch (e: Exception) {
-                // Continue searching other locations
+    suspend fun restoreFromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val input: InputStream = try {
+                context.contentResolver.openInputStream(uri)
+                    ?: return@withContext Result.failure(Exception("Unable to open backup input stream from Uri"))
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Permission denied while opening backup Uri: ${e.message}")
+                return@withContext Result.failure(Exception("Permission denied while accessing backup Uri: ${e.message}", e))
             }
+
+            val jsonString = input.bufferedReader().use { it.readText() }
+            val backup = tryParseAppBackup(jsonString)
+
+            var restoredCount = 0
+            backup.readings.forEach { backupReading ->
+                try {
+                    repository.insertReading(backupReading.toReading())
+                    restoredCount++
+                } catch (_: Exception) {
+                    // continue on insertion errors
+                }
+            }
+
+            Result.success(restoredCount)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Restore from Uri failed due to permission error: ${e.message}")
+            Result.failure(Exception("Restore failed: permission denied - ${e.message}", e))
+        } catch (e: Exception) {
+            Result.failure(Exception("Restore failed from Uri: ${e.message}", e))
         }
-        false
+    }
+
+    suspend fun hasBackupAvailable(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val (file, uri) = findBackupSource()
+            return@withContext file != null || uri != null
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission denied while checking for backup: ${e.message}")
+            throw e
+        } catch (_: Exception) {
+            return@withContext false
+        }
     }
 
     suspend fun getBackupInfo(): BackupInfo? = withContext(Dispatchers.IO) {
-        // Search across all possible backup locations
-        val locations = listOf(
-            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BloodSugarApp"),
-            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
-            File(Environment.getExternalStorageDirectory(), "BloodSugarApp"),
-            File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "BloodSugarApp"),
-            File(context.cacheDir, "BloodSugarApp")
-        )
-
-        for (location in locations) {
-            try {
-                val autoFile = File(location, autoBackupFileName)
-                val manualFile = File(location, backupFileName)
-
-                val file = when {
-                    autoFile.exists() -> autoFile
-                    manualFile.exists() -> manualFile
-                    else -> continue
+        try {
+            val (file, uri) = findBackupSource()
+            val jsonString: String? = when {
+                uri != null -> {
+                    try {
+                        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    } catch (e: SecurityException) {
+                        Log.e(TAG, "Permission denied while reading backup Uri for info: ${e.message}")
+                        return@withContext null
+                    }
                 }
-
-                val jsonString = file.readText()
-                val backup = json.decodeFromString<AppBackup>(jsonString)
-
-                return@withContext BackupInfo(
-                    date = Date(backup.exportDate),
-                    readingCount = backup.readings.size,
-                    filePath = file.absolutePath
-                )
-            } catch (e: Exception) {
-                // Continue searching other locations
+                file != null -> {
+                    if (file.exists()) {
+                        try {
+                            file.readText()
+                        } catch (e: SecurityException) {
+                            Log.e(TAG, "Permission denied while reading backup file for info: ${e.message}")
+                            return@withContext null
+                        }
+                    } else null
+                }
+                else -> null
             }
+
+            if (jsonString == null) return@withContext null
+            val backup = tryParseAppBackup(jsonString)
+            val path = uri?.toString() ?: file?.absolutePath ?: ""
+            return@withContext BackupInfo(
+                date = Date(backup.exportDate),
+                readingCount = backup.readings.size,
+                filePath = path
+            )
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission denied while getting backup info: ${e.message}")
+            null
+        } catch (_: Exception) {
+            null
         }
-        null
     }
 
     suspend fun deleteBackup(): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            val autoFile = File(backupDir, autoBackupFileName)
-            val manualFile = File(backupDir, backupFileName)
+            var deletedAny = false
 
-            var deleted = false
-            if (autoFile.exists()) {
-                deleted = autoFile.delete() || deleted
-            }
-            if (manualFile.exists()) {
-                deleted = manualFile.delete() || deleted
+            // 1) MediaStore (API Q+)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val resolver = context.contentResolver
+                    val autoUri = findMediaStoreUriByName(autoBackupFileName)
+                    val manualUri = findMediaStoreUriByName(backupFileName)
+                    try {
+                        if (autoUri != null) {
+                            resolver.delete(autoUri, null, null)
+                            deletedAny = true
+                        }
+                    } catch (e: SecurityException) {
+                        Log.e(TAG, "Permission denied while deleting backup Uri: ${e.message}")
+                        throw e
+                    } catch (_: Exception) {
+                        // ignore individual delete failures
+                    }
+
+                    try {
+                        if (manualUri != null) {
+                            resolver.delete(manualUri, null, null)
+                            deletedAny = true
+                        }
+                    } catch (e: SecurityException) {
+                        Log.e(TAG, "Permission denied while deleting backup Uri: ${e.message}")
+                        throw e
+                    } catch (_: Exception) {
+                        // ignore
+                    }
+                }
+            } catch (e: SecurityException) {
+                throw e
+            } catch (_: Exception) {
+                // continue to filesystem fallbacks
             }
 
-            Result.success(deleted)
+            // 2) Public Downloads folder (pre-Q)
+            try {
+                val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val folder = File(downloads, backupFolderName)
+                val autoFile = File(folder, autoBackupFileName)
+                val manualFile = File(folder, backupFileName)
+                if (autoFile.exists() && autoFile.delete()) deletedAny = true
+                if (manualFile.exists() && manualFile.delete()) deletedAny = true
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Permission denied while deleting public Downloads backup: ${e.message}")
+                throw e
+            } catch (_: Exception) {
+                // ignore
+            }
+
+            // 3) App-specific external folder
+            try {
+                appExternalFolder?.let { folder ->
+                    val autoFile = File(folder, autoBackupFileName)
+                    val manualFile = File(folder, backupFileName)
+                    if (autoFile.exists() && autoFile.delete()) deletedAny = true
+                    if (manualFile.exists() && manualFile.delete()) deletedAny = true
+                }
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Permission denied while deleting app external backup: ${e.message}")
+                throw e
+            } catch (_: Exception) {
+                // ignore
+            }
+
+            // 4) Cache folder
+            try {
+                val autoFile = File(cacheFolder, autoBackupFileName)
+                val manualFile = File(cacheFolder, backupFileName)
+                if (autoFile.exists() && autoFile.delete()) deletedAny = true
+                if (manualFile.exists() && manualFile.delete()) deletedAny = true
+            } catch (_: Exception) {
+                // ignore
+            }
+
+            Result.success(deletedAny)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Delete backup failed due to permission error: ${e.message}")
+            Result.failure(Exception("Permission denied while deleting backup: ${e.message}", e))
         } catch (e: Exception) {
-            Result.failure(e)
+            Log.e(TAG, "Delete backup failed: ${e.message}")
+            Result.failure(Exception("Failed to delete backup: ${e.message}", e))
         }
+    }
+
+    // Improve JSON parsing robustness:
+    // - Use a lenient Json configuration that ignores unknown keys.
+    // - Normalize the string by trimming and removing a possible BOM (\uFEFF).
+    // - If top-level AppBackup parsing fails, try parsing an array of ReadingBackup (older backup format).
+    private val robustJson = Json { prettyPrint = true; ignoreUnknownKeys = true; isLenient = true }
+
+    private fun normalizeJsonString(input: String): String {
+        var s = input.trim()
+        if (s.isNotEmpty() && s[0] == '\uFEFF') s = s.substring(1)
+        return s
+    }
+
+    private fun tryParseAppBackup(jsonString: String): AppBackup {
+        val normalized = normalizeJsonString(jsonString)
+        try {
+            return robustJson.decodeFromString<AppBackup>(normalized)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse as AppBackup: ${e.message}")
+            // Try fallback: maybe the file is a plain array of ReadingBackup
+            try {
+                val list = robustJson.decodeFromString<List<ReadingBackup>>(normalized)
+                return AppBackup(exportDate = System.currentTimeMillis(), appVersion = "unknown", readings = list)
+            } catch (e2: Exception) {
+                Log.w(TAG, "Failed to parse as List<ReadingBackup>: ${e2.message}")
+                // Attempt to handle concatenated JSON objects (e.g. }{ ) or multiple top-level values
+                try {
+                    val elements = splitTopLevelJsonElements(normalized)
+                    if (elements.size > 1) {
+                        val mergedReadings = mutableListOf<ReadingBackup>()
+                        elements.forEachIndexed { idx, elem ->
+                            // Try parse each element as AppBackup, List<ReadingBackup>, or single ReadingBackup
+                            try {
+                                val ab = robustJson.decodeFromString<AppBackup>(elem)
+                                mergedReadings.addAll(ab.readings)
+                                return@forEachIndexed
+                            } catch (_: Exception) {}
+
+                            try {
+                                val listElem = robustJson.decodeFromString<List<ReadingBackup>>(elem)
+                                mergedReadings.addAll(listElem)
+                                return@forEachIndexed
+                            } catch (_: Exception) {}
+
+                            try {
+                                val single = robustJson.decodeFromString<ReadingBackup>(elem)
+                                mergedReadings.add(single)
+                                return@forEachIndexed
+                            } catch (_: Exception) {}
+                        }
+
+                        if (mergedReadings.isNotEmpty()) {
+                            Log.w(TAG, "Parsed and merged ${mergedReadings.size} readings from ${elements.size} top-level JSON elements")
+                            return AppBackup(exportDate = System.currentTimeMillis(), appVersion = "merged", readings = mergedReadings)
+                        }
+                    }
+                } catch (splitEx: Exception) {
+                    Log.w(TAG, "Failed to split/parse multiple JSON elements: ${splitEx.message}")
+                }
+
+                // Log full details and re-throw the original error to be handled by caller
+                Log.e(TAG, "JSON parsing failed for backup content. Original error: ${e.message}", e)
+                throw e
+             }
+         }
+     }
+
+    // Split input into top-level JSON elements (objects or arrays). Handles strings and escapes.
+    private fun splitTopLevelJsonElements(input: String): List<String> {
+        val res = mutableListOf<String>()
+        var inString = false
+        var escaped = false
+        var depth = 0
+        var start = -1
+
+        for (i in input.indices) {
+            val ch = input[i]
+
+            if (ch == '"' && !escaped) {
+                inString = !inString
+            }
+
+            if (!inString) {
+                if (ch == '{' || ch == '[') {
+                    if (depth == 0) start = i
+                    depth++
+                } else if (ch == '}' || ch == ']') {
+                    depth--
+                    if (depth == 0 && start >= 0) {
+                        res.add(input.substring(start, i + 1))
+                        start = -1
+                    }
+                }
+            }
+
+            // handle escape state
+            if (ch == '\\' && !escaped) {
+                escaped = true
+            } else {
+                escaped = false
+            }
+        }
+
+        // If nothing was detected as top-level objects/arrays, but trimmed input non-empty, return the whole input
+        if (res.isEmpty()) {
+            val trimmed = input.trim()
+            if (trimmed.isNotEmpty()) return listOf(trimmed)
+        }
+
+        return res
     }
 }
 
