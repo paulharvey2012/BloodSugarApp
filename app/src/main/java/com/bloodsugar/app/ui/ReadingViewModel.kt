@@ -18,7 +18,9 @@ import java.util.Date
 class ReadingViewModel(
     private val repository: ReadingRepository,
     private val unitPreferences: UnitPreferences? = null,
-    private val backupService: BackupService? = null
+    private val backupService: BackupService? = null,
+    // When true, the ViewModel will attempt auto-restore during initialization if DB is empty.
+    autoRestoreOnInit: Boolean = true
 ) : ViewModel() {
 
     val allReadings: Flow<List<Reading>> = repository.getAllReadings()
@@ -44,12 +46,15 @@ class ReadingViewModel(
             }
         }
 
-        // Check for existing backups on startup
+        // Always check for existing backups on startup
         checkForExistingBackups()
 
-        // Auto-restore from backup if no data exists
-        autoRestoreIfNeeded()
+        // Only attempt auto-restore during initialization when explicitly allowed (first-run)
+        if (autoRestoreOnInit) {
+            autoRestoreIfNeeded()
+        }
     }
+
 
     private fun checkForExistingBackups() {
         viewModelScope.launch {
@@ -96,7 +101,8 @@ class ReadingViewModel(
                                     if (count > 0) {
                                         _backupState.value = _backupState.value.copy(
                                             message = "Automatically restored $count readings from previous installation",
-                                            hasBackupAvailable = true
+                                            hasBackupAvailable = true,
+                                            lastRestoreCount = count
                                         )
                                     }
                                 }.onFailure { error ->
@@ -242,7 +248,8 @@ class ReadingViewModel(
                         _backupState.value = _backupState.value.copy(
                             isLoading = false,
                             message = "Successfully restored $count readings from backup",
-                            hasBackupAvailable = count > 0
+                            hasBackupAvailable = count > 0,
+                            lastRestoreCount = count
                         )
                     }.onFailure { error ->
                         val msg = error.message ?: "Unknown error"
@@ -254,7 +261,8 @@ class ReadingViewModel(
                         } else {
                             _backupState.value = _backupState.value.copy(
                                 isLoading = false,
-                                error = "Failed to restore backup: $msg"
+                                error = "Failed to restore backup: $msg",
+                                lastRestoreCount = 0
                             )
                         }
                     }
@@ -266,7 +274,8 @@ class ReadingViewModel(
                 } catch (_: Exception) {
                     _backupState.value = _backupState.value.copy(
                         isLoading = false,
-                        error = "Failed to restore backup: ${'$'}{(null as Exception?)?.message}"
+                        error = "Failed to restore backup: ${'$'}{(null as Exception?)?.message}",
+                        lastRestoreCount = 0
                     )
                 }
             }
@@ -283,7 +292,8 @@ class ReadingViewModel(
                         _backupState.value = _backupState.value.copy(
                             isLoading = false,
                             message = "Successfully restored $count readings from imported backup",
-                            hasBackupAvailable = count > 0
+                            hasBackupAvailable = count > 0,
+                            lastRestoreCount = count
                         )
                     }.onFailure { error ->
                         val msg = error.message ?: "Unknown error"
@@ -295,7 +305,8 @@ class ReadingViewModel(
                         } else {
                             _backupState.value = _backupState.value.copy(
                                 isLoading = false,
-                                error = "Failed to restore imported backup: $msg"
+                                error = "Failed to restore imported backup: $msg",
+                                lastRestoreCount = 0
                             )
                         }
                     }
@@ -307,7 +318,8 @@ class ReadingViewModel(
                 } catch (_: Exception) {
                     _backupState.value = _backupState.value.copy(
                         isLoading = false,
-                        error = "Failed to restore imported backup: ${'$'}{(null as Exception?)?.message}"
+                        error = "Failed to restore imported backup: ${'$'}{(null as Exception?)?.message}",
+                        lastRestoreCount = 0
                     )
                 }
             }
@@ -317,31 +329,31 @@ class ReadingViewModel(
     fun deleteBackup() {
         viewModelScope.launch {
             backupService?.let { service ->
-                val result: kotlin.Result<Boolean> = service.deleteBackup()
-                result.onSuccess { deleted: Boolean ->
-                    _backupState.value = _backupState.value.copy(
-                        hasBackupAvailable = false,
-                        lastBackupInfo = null,
-                        message = if (deleted) "Backup deleted successfully" else "No backup found to delete"
-                    )
-                }.onFailure { error: Throwable ->
-                    val msg = error.message ?: "Unknown error"
-                    if (msg.contains("Permission denied", ignoreCase = true)) {
-                        _backupState.value = _backupState.value.copy(
-                            error = "Failed to delete backup: permission denied while accessing backup files."
-                        )
-                    } else {
-                        _backupState.value = _backupState.value.copy(
-                            error = "Failed to delete backup: ${'$'}{error.message}"
-                        )
-                    }
-                }
-            }
-        }
-    }
+                val result: Result<Boolean> = service.deleteBackup()
+                result.onSuccess { deleted ->
+                     _backupState.value = _backupState.value.copy(
+                         hasBackupAvailable = false,
+                         lastBackupInfo = null,
+                         message = if (deleted) "Backup deleted successfully" else "No backup found to delete"
+                     )
+                 }.onFailure { error: Throwable ->
+                     val msg = error.message ?: "Unknown error"
+                     if (msg.contains("Permission denied", ignoreCase = true)) {
+                         _backupState.value = _backupState.value.copy(
+                             error = "Failed to delete backup: permission denied while accessing backup files."
+                         )
+                     } else {
+                         _backupState.value = _backupState.value.copy(
+                             error = "Failed to delete backup: ${'$'}{error.message}"
+                         )
+                     }
+                 }
+             }
+         }
+     }
 
     fun clearMessage() {
-        _backupState.value = _backupState.value.copy(message = null, error = null)
+        _backupState.value = _backupState.value.copy(message = null, error = null, lastRestoreCount = null)
     }
 }
 
@@ -355,18 +367,22 @@ data class BackupUiState(
     val hasBackupAvailable: Boolean = false,
     val lastBackupInfo: BackupInfo? = null,
     val message: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    // Number of readings imported by the most recent restore attempt (null if none yet)
+    val lastRestoreCount: Int? = null
 )
 
 class ReadingViewModelFactory(
     private val repository: ReadingRepository,
     private val unitPreferences: UnitPreferences? = null,
-    private val backupService: BackupService? = null
+    private val backupService: BackupService? = null,
+    // When true, the created ViewModel will attempt auto-restore during init if DB is empty.
+    private val autoRestoreOnInit: Boolean = true
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(ReadingViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return ReadingViewModel(repository, unitPreferences, backupService) as T
+            return ReadingViewModel(repository, unitPreferences, backupService, autoRestoreOnInit) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

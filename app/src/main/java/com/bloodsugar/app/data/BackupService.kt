@@ -142,6 +142,25 @@ class BackupService(
         return null
     }
 
+    // Return all URIs in MediaStore that match the given filename (may be multiple entries).
+    private fun findAllMediaStoreUrisByName(fileName: String): List<Uri> {
+        val result = mutableListOf<Uri>()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return result
+        val resolver = context.contentResolver
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
+        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
+        val selectionArgs = arrayOf(fileName)
+        resolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(idIndex)
+                result.add(Uri.withAppendedPath(collection, id.toString()))
+            }
+        }
+        return result
+    }
+
     // Search for a backup either in MediaStore (public Downloads) or filesystem fallbacks
     private fun findBackupSource(): Pair<File?, Uri?> {
         // 1) Look in MediaStore (modern, persistent across uninstall)
@@ -198,6 +217,151 @@ class BackupService(
         }
 
         return Pair(null, null)
+    }
+
+    // Collect all candidate backup File/Uri locations (both auto and manual filenames).
+    private fun findBackupCandidates(): List<Pair<File?, Uri?>> {
+        val candidates = mutableListOf<Pair<File?, Uri?>>()
+
+        // 1) MediaStore (API Q+): check both filenames and include all matching URIs
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                findAllMediaStoreUrisByName(autoBackupFileName).forEach { candidates.add(Pair(null, it)) }
+                findAllMediaStoreUrisByName(backupFileName).forEach { candidates.add(Pair(null, it)) }
+            }
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        // 2) Public Downloads folder (pre-Q)
+        try {
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val folder = File(downloads, backupFolderName)
+            val autoFile = File(folder, autoBackupFileName)
+            val manualFile = File(folder, backupFileName)
+            if (autoFile.exists()) candidates.add(Pair(autoFile, null))
+            if (manualFile.exists()) candidates.add(Pair(manualFile, null))
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        // 3) App-specific external folder
+        try {
+            appExternalFolder?.let { folder ->
+                val autoFile = File(folder, autoBackupFileName)
+                val manualFile = File(folder, backupFileName)
+                if (autoFile.exists()) candidates.add(Pair(autoFile, null))
+                if (manualFile.exists()) candidates.add(Pair(manualFile, null))
+            }
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        // 4) Cache folder
+        try {
+            val autoFile = File(cacheFolder, autoBackupFileName)
+            val manualFile = File(cacheFolder, backupFileName)
+            if (autoFile.exists()) candidates.add(Pair(autoFile, null))
+            if (manualFile.exists()) candidates.add(Pair(manualFile, null))
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        return candidates
+    }
+
+    // Find the most recent backup by reading and parsing each candidate's exportDate.
+    private suspend fun findLatestBackup(): Pair<File?, Uri?> = withContext(Dispatchers.IO) {
+        val candidates = findBackupCandidates()
+        // Capture folder paths into local vals to avoid smart-cast issues when using properties with custom getters
+        val appExtPath: String? = try { appExternalFolder?.absolutePath } catch (_: Exception) { null }
+        val cachePath: String = try { cacheFolder.absolutePath } catch (_: Exception) { "" }
+        // Selection tuple: (hasExportDate (1/0), timestampMillis, sourcePriority)
+        // sourcePriority: 4=MediaStore(Uri),3=public Downloads,2=appExternal,1=cache
+        var bestPair: Pair<File?, Uri?> = Pair(null, null)
+        var bestHasExport = -1
+        var bestTimestamp = Long.MIN_VALUE
+        var bestSourcePriority = -1
+
+        candidates.forEach { (file, uri) ->
+            try {
+                val jsonString = when {
+                    uri != null -> context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    file != null -> file.readText()
+                    else -> null
+                } ?: return@forEach
+
+                try {
+                    val parseResult = parseAppBackupWithInfo(jsonString)
+
+                    val hadExport = if (parseResult.hadExportDate && parseResult.backup.exportDate > 0L) 1 else 0
+                    val timestamp = if (hadExport == 1) {
+                        parseResult.backup.exportDate
+                    } else {
+                        // fallback to metadata
+                        var metaDate = Long.MIN_VALUE
+                        try {
+                            if (file != null) {
+                                val lm = file.lastModified()
+                                if (lm > 0) metaDate = lm
+                            }
+                        } catch (_: Exception) {}
+
+                        try {
+                            if (uri != null) {
+                                val msDate = queryMediaStoreDate(uri)
+                                if (msDate != null && msDate > metaDate) metaDate = msDate
+                            }
+                        } catch (_: Exception) {}
+
+                        metaDate
+                    }
+
+                    val sourcePriority = when {
+                        uri != null -> 4
+                        file != null && appExtPath != null && file.absolutePath.startsWith(appExtPath) -> 2
+                        file != null && cachePath.isNotEmpty() && file.absolutePath.startsWith(cachePath) -> 1
+                        file != null -> 3 // public Downloads or other filesystem
+                        else -> 0
+                    }
+
+                    val candidateId = uri?.toString() ?: file?.absolutePath ?: "(unknown)"
+                    Log.d(TAG, "Backup candidate: $candidateId -> hadExport=$hadExport, timestamp=$timestamp, src=$sourcePriority")
+
+                    // Compare tuple (hadExport, timestamp, sourcePriority)
+                    val better = when {
+                        hadExport > bestHasExport -> true
+                        hadExport < bestHasExport -> false
+                        timestamp > bestTimestamp -> true
+                        timestamp < bestTimestamp -> false
+                        sourcePriority > bestSourcePriority -> true
+                        else -> false
+                    }
+
+                    if (better) {
+                        bestHasExport = hadExport
+                        bestTimestamp = timestamp
+                        bestSourcePriority = sourcePriority
+                        bestPair = Pair(file, uri)
+                    }
+                } catch (_: Exception) {
+                    // parsing failed for this candidate - skip
+                }
+            } catch (_: SecurityException) {
+                // permission problem reading this candidate: skip but continue
+            } catch (_: Exception) {
+                // ignore io failures for this candidate
+            }
+        }
+
+        if (bestPair.first != null || bestPair.second != null) {
+            val chosenId = bestPair.second?.toString() ?: bestPair.first?.absolutePath ?: "(none)"
+            Log.i(TAG, "Selected latest backup: $chosenId (hadExport=$bestHasExport, timestamp=$bestTimestamp, src=$bestSourcePriority)")
+        } else {
+            Log.i(TAG, "No backup candidates found by findLatestBackup()")
+        }
+
+        return@withContext bestPair
     }
 
     suspend fun createBackup(includeAutoBackup: Boolean = true): Result<String> = withContext(Dispatchers.IO) {
@@ -266,7 +430,8 @@ class BackupService(
             val (file, uri) = if (filePath != null) {
                 Pair(File(filePath), null)
             } else {
-                findBackupSource()
+                // Pick the latest backup across all candidate locations
+                findLatestBackup()
             }
 
             val jsonString: String = when {
@@ -293,13 +458,13 @@ class BackupService(
                 else -> return@withContext Result.failure(Exception("No backup file found in any location"))
             }
 
-            val backup = tryParseAppBackup(jsonString)
+            val backup = parseAppBackupWithInfo(jsonString).backup
 
             var restoredCount = 0
             backup.readings.forEach { backupReading ->
                 try {
-                    repository.insertReading(backupReading.toReading())
-                    restoredCount++
+                    val inserted = repository.insertReadingIfNotExists(backupReading.toReading())
+                    if (inserted) restoredCount++
                 } catch (_: Exception) {
                     // continue
                 }
@@ -325,13 +490,13 @@ class BackupService(
             }
 
             val jsonString = input.bufferedReader().use { it.readText() }
-            val backup = tryParseAppBackup(jsonString)
+            val backup = parseAppBackupWithInfo(jsonString).backup
 
             var restoredCount = 0
             backup.readings.forEach { backupReading ->
                 try {
-                    repository.insertReading(backupReading.toReading())
-                    restoredCount++
+                    val inserted = repository.insertReadingIfNotExists(backupReading.toReading())
+                    if (inserted) restoredCount++
                 } catch (_: Exception) {
                     // continue on insertion errors
                 }
@@ -348,7 +513,7 @@ class BackupService(
 
     suspend fun hasBackupAvailable(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val (file, uri) = findBackupSource()
+            val (file, uri) = findLatestBackup()
             return@withContext file != null || uri != null
         } catch (e: SecurityException) {
             Log.e(TAG, "Permission denied while checking for backup: ${e.message}")
@@ -360,7 +525,7 @@ class BackupService(
 
     suspend fun getBackupInfo(): BackupInfo? = withContext(Dispatchers.IO) {
         try {
-            val (file, uri) = findBackupSource()
+            val (file, uri) = findLatestBackup()
             val jsonString: String? = when {
                 uri != null -> {
                     try {
@@ -384,11 +549,19 @@ class BackupService(
             }
 
             if (jsonString == null) return@withContext null
-            val backup = tryParseAppBackup(jsonString)
+            val parseResult = parseAppBackupWithInfo(jsonString)
             val path = uri?.toString() ?: file?.absolutePath ?: ""
+            // If the JSON had an explicit exportDate > 0 use it; otherwise fall back to file/MediaStore metadata or current time.
+            val dateMillis = when {
+                parseResult.hadExportDate && parseResult.backup.exportDate > 0L -> parseResult.backup.exportDate
+                file != null -> try { val lm = file.lastModified(); if (lm > 0L) lm else System.currentTimeMillis() } catch (_: Exception) { System.currentTimeMillis() }
+                uri != null -> queryMediaStoreDate(uri) ?: System.currentTimeMillis()
+                else -> System.currentTimeMillis()
+            }
+
             return@withContext BackupInfo(
-                date = Date(backup.exportDate),
-                readingCount = backup.readings.size,
+                date = Date(dateMillis),
+                readingCount = parseResult.backup.readings.size,
                 filePath = path
             )
         } catch (e: SecurityException) {
@@ -501,16 +674,21 @@ class BackupService(
         return s
     }
 
-    private fun tryParseAppBackup(jsonString: String): AppBackup {
+    private data class ParseResult(val backup: AppBackup, val hadExportDate: Boolean)
+
+    // Parse JSON and indicate whether the JSON included exportDate.
+    private fun parseAppBackupWithInfo(jsonString: String): ParseResult {
         val normalized = normalizeJsonString(jsonString)
         try {
-            return robustJson.decodeFromString<AppBackup>(normalized)
+            val ab = robustJson.decodeFromString<AppBackup>(normalized)
+            return ParseResult(ab, true)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to parse as AppBackup: ${e.message}")
             // Try fallback: maybe the file is a plain array of ReadingBackup
             try {
                 val list = robustJson.decodeFromString<List<ReadingBackup>>(normalized)
-                return AppBackup(exportDate = System.currentTimeMillis(), appVersion = "unknown", readings = list)
+                val ab = AppBackup(exportDate = 0L, appVersion = "unknown", readings = list)
+                return ParseResult(ab, false)
             } catch (e2: Exception) {
                 Log.w(TAG, "Failed to parse as List<ReadingBackup>: ${e2.message}")
                 // Attempt to handle concatenated JSON objects (e.g. }{ ) or multiple top-level values
@@ -541,7 +719,8 @@ class BackupService(
 
                         if (mergedReadings.isNotEmpty()) {
                             Log.w(TAG, "Parsed and merged ${mergedReadings.size} readings from ${elements.size} top-level JSON elements")
-                            return AppBackup(exportDate = System.currentTimeMillis(), appVersion = "merged", readings = mergedReadings)
+                            val ab = AppBackup(exportDate = 0L, appVersion = "merged", readings = mergedReadings)
+                            return ParseResult(ab, false)
                         }
                     }
                 } catch (splitEx: Exception) {
@@ -551,9 +730,9 @@ class BackupService(
                 // Log full details and re-throw the original error to be handled by caller
                 Log.e(TAG, "JSON parsing failed for backup content. Original error: ${e.message}", e)
                 throw e
-             }
-         }
-     }
+            }
+        }
+    }
 
     // Split input into top-level JSON elements (objects or arrays). Handles strings and escapes.
     private fun splitTopLevelJsonElements(input: String): List<String> {
@@ -598,6 +777,35 @@ class BackupService(
         }
 
         return res
+    }
+
+    // Query MediaStore for a timestamp (DATE_MODIFIED or DATE_ADDED) for a given Uri. Returns milliseconds since epoch or null.
+    private fun queryMediaStoreDate(uri: Uri): Long? {
+        return try {
+            val resolver = context.contentResolver
+            val projection = arrayOf(MediaStore.MediaColumns.DATE_MODIFIED, MediaStore.MediaColumns.DATE_ADDED)
+            resolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val modIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
+                    if (modIdx >= 0) {
+                        val modified = cursor.getLong(modIdx)
+                        // DATE_MODIFIED is seconds since epoch on some providers
+                        val ms = if (modified < 1e12) modified * 1000 else modified
+                        return ms
+                    }
+                    val addIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED)
+                    if (addIdx >= 0) {
+                        val added = cursor.getLong(addIdx)
+                        val ms = if (added < 1e12) added * 1000 else added
+                        return ms
+                    }
+                }
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to query MediaStore date for $uri: ${e.message}")
+            null
+        }
     }
 }
 

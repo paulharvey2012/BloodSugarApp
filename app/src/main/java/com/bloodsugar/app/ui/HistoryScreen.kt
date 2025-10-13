@@ -443,6 +443,7 @@ private fun mockHistoryDao(): com.bloodsugar.app.data.ReadingDao {
         override suspend fun updateReading(reading: Reading) {}
         override suspend fun deleteReading(reading: Reading) {}
         override suspend fun getReadingById(id: Long): Reading? = sampleReadings.find { it.id == id }
+        override suspend fun countMatchingFuzzy(type: String, value: Double, startDate: java.util.Date, endDate: java.util.Date, epsilon: Double): Int = 0
     }
 }
 
@@ -455,5 +456,6 @@ private fun mockEmptyDao(): com.bloodsugar.app.data.ReadingDao {
         override suspend fun updateReading(reading: Reading) {}
         override suspend fun deleteReading(reading: Reading) {}
         override suspend fun getReadingById(id: Long): Reading? = null
+        override suspend fun countMatchingFuzzy(type: String, value: Double, startDate: java.util.Date, endDate: java.util.Date, epsilon: Double): Int = 0
     }
 }
