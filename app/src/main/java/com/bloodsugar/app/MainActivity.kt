@@ -92,10 +92,20 @@ class MainActivity : ComponentActivity() {
         }
 
         // Handle auto-restore with proper permission checking
-        // On first run, always present the import picker so the user can choose a backup
-        // (this ensures SAF permission is granted when needed and avoids silent EACCES attempts).
+        // On first run after reinstall: perform a one-time auto-restore flow. This runs a
+        // permission check and only opens the import picker if necessary (e.g. best
+        // candidate is a content Uri or permission is required). Mark the preference
+        // immediately so this auto-restore attempt only happens once after reinstall.
         if (shouldAutoRestore) {
-            ImportInvoker.launcher?.invoke()
+            try {
+                prefs.edit { putBoolean(PREF_AUTO_RESTORE_DONE, true) }
+            } catch (_: Exception) {
+                // ignore prefs write failures
+            }
+            // Kick off permission check + possible auto-restore (this will only open the
+            // picker if the database is empty and a content URI requires user permission,
+            // or if other conditions in attemptAutoRestore()/checkPermissionsAndAutoRestore() demand it).
+            checkPermissionsAndAutoRestore()
         }
 
         // Debug/test hook: if the activity is started with the intent extra `force_import=true`,
@@ -195,7 +205,7 @@ class MainActivity : ComponentActivity() {
                 if (readings.isEmpty()) {
                     // Database is empty, choose an appropriate restore strategy.
                     try {
-                        val info = try { backupService?.getBackupInfo() } catch (se: SecurityException) { null }
+                        val info = try { backupService?.getBackupInfo() } catch (_: SecurityException) { null }
                         if (info != null) {
                             val path = info.filePath
                             if (path.startsWith("content://", ignoreCase = true)) {
@@ -212,7 +222,7 @@ class MainActivity : ComponentActivity() {
                     // Either no special handling needed or fallback: trigger auto-restore
                     activityViewModel.restoreFromBackup()
                 }
-             } catch (e: Exception) {
+             } catch (_: Exception) {
                  // Silently fail - don't disrupt app startup
              }
          }

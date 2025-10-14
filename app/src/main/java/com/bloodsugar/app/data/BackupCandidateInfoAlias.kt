@@ -1,8 +1,7 @@
 package com.bloodsugar.app.data
 
 // Backwards-compatible typealias: some code refers to com.bloodsugar.app.data.BackupCandidateInfo
-// while the actual data class is nested inside BackupService. Provide a top-level alias
+// while the actual data class is BackupInfo. Provide a top-level alias
 // so existing references compile without changing many files.
 
-typealias BackupCandidateInfo = BackupService.BackupCandidateInfo
-
+typealias BackupCandidateInfo = BackupInfo

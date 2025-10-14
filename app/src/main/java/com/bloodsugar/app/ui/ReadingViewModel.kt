@@ -27,10 +27,6 @@ class ReadingViewModel(
 
     val allReadings: Flow<List<Reading>> = repository.getAllReadings()
 
-    // backup candidates state for debug UI
-    private val _backupCandidates = MutableStateFlow<List<com.bloodsugar.app.data.BackupCandidateInfo>>(emptyList())
-    val backupCandidates: StateFlow<List<com.bloodsugar.app.data.BackupCandidateInfo>> = _backupCandidates
-
     private val _uiState = MutableStateFlow(ReadingUiState())
     @Suppress("unused")
     val uiState: StateFlow<ReadingUiState> = _uiState
@@ -67,21 +63,17 @@ class ReadingViewModel(
             backupService?.let { service ->
                 try {
                     val hasBackup = service.hasBackupAvailable()
-                    val backupInfo = service.getBackupInfo()
+                    val backupInfo = if (hasBackup) service.getBackupInfo() else null
                     _backupState.value = _backupState.value.copy(
                         hasBackupAvailable = hasBackup,
                         lastBackupInfo = backupInfo
                     )
-                } catch (_: SecurityException) {
-                    // Surface permission denied to the UI so user can take action
+                } catch (_: Exception) {
+                    // If any error occurs during backup checking, simply set no backup available
+                    // This prevents error messages on fresh installs
                     _backupState.value = _backupState.value.copy(
                         hasBackupAvailable = false,
-                        error = "Permission denied while accessing backups. Please grant storage permission or pick the backup file manually."
-                    )
-                } catch (_: Exception) {
-                    // Non-permission failures should not crash startup
-                    _backupState.value = _backupState.value.copy(
-                        hasBackupAvailable = false
+                        lastBackupInfo = null
                     )
                 }
             }
@@ -98,11 +90,26 @@ class ReadingViewModel(
                 }
 
                 if (shouldRestore) {
-                    // Database is empty, try to auto-restore from backup
+                    // Database is empty, check if there are any backup files available before attempting restore
                     backupService?.let { service ->
                         try {
-                            val backupInfo = try { service.getBackupInfo() } catch (_: Exception) { null }
-                            if (backupInfo != null) {
+                            // First check if any backup is actually available - this now returns false for permission issues
+                            val hasBackup = service.hasBackupAvailable()
+                            if (!hasBackup) {
+                                // No backup files exist - this is a fresh install, exit silently
+                                return@let
+                            }
+
+                            // Only proceed if we confirmed backups exist
+                            val backupInfo = try {
+                                service.getBackupInfo()
+                            } catch (_: Exception) {
+                                // If we can't get backup info even though hasBackup was true,
+                                // this suggests permission issues, so exit silently
+                                return@let
+                            }
+
+                            if (backupInfo != null && backupInfo.readingCount > 0) {
                                 // If the best candidate is a MediaStore Uri (content://) we should avoid
                                 // attempting an automatic restore here because some devices/providers
                                 // may deny read access without an explicit user-granted Uri permission.
@@ -148,23 +155,14 @@ class ReadingViewModel(
                                                 )
                                             }
                                         }
-                                    } catch (_: SecurityException) {
-                                        _backupState.value = _backupState.value.copy(
-                                            error = "Auto-restore failed: permission denied while accessing backups. Please grant storage permission or import the backup manually."
-                                        )
                                     } catch (_: Exception) {
-                                        // Log or ignore - don't disrupt startup
+                                        // Silently fail - don't disrupt startup
                                     }
                                 }
-                            } else {
-                                // No backup info available; nothing to restore
                             }
-                        } catch (_: SecurityException) {
-                            _backupState.value = _backupState.value.copy(
-                                error = "Auto-restore failed: permission denied while accessing backups. Please grant storage permission or import the backup manually."
-                            )
+                            // If backupInfo is null or has 0 readings, silently do nothing
                         } catch (_: Exception) {
-                            // Log or ignore
+                            // Silently fail for any other errors during backup checking
                         }
                     }
                 }
@@ -367,25 +365,6 @@ class ReadingViewModel(
     }
 
 
-    // Fetch and publish backup candidate list (for debug screen)
-    fun fetchBackupCandidates() {
-        viewModelScope.launch {
-            try {
-                val list = backupService?.listBackupCandidates() ?: emptyList()
-                _backupCandidates.value = list
-            } catch (_: SecurityException) {
-                 _backupCandidates.value = emptyList()
-                 _backupState.value = _backupState.value.copy(
-                     error = "Permission denied while listing backup candidates"
-                 )
-             } catch (e: Exception) {
-                 _backupCandidates.value = emptyList()
-                 _backupState.value = _backupState.value.copy(
-                     error = "Failed to list backup candidates: ${e.message}"
-                 )
-             }
-         }
-     }
 
     // Restore from a file path (filesystem) and optionally clear existing readings
     fun restoreFromCandidateFilePath(filePath: String, clearExisting: Boolean = true) {
@@ -464,6 +443,7 @@ class ReadingViewModel(
              }
          }
      }
+
 
     fun clearMessage() {
         _backupState.value = _backupState.value.copy(message = null, error = null, lastRestoreCount = null)

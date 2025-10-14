@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.bloodsugar.app.ui
 
 import androidx.compose.foundation.layout.*
@@ -12,8 +14,10 @@ import com.bloodsugar.app.ui.components.VersionFooter
 import com.bloodsugar.app.ui.theme.BloodSugarAppTheme
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.bloodsugar.app.data.UnitPreferences
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.foundation.layout.PaddingValues
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(viewModel: ReadingViewModel) {
     val unit by viewModel.unit.collectAsStateWithLifecycle(initialValue = UnitPreferences.DEFAULT_UNIT)
@@ -37,167 +41,132 @@ fun SettingsScreen(viewModel: ReadingViewModel) {
         modifier = Modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { contentPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .padding(contentPadding),
+        val layoutDirection = LocalLayoutDirection.current
+        val combinedPadding = PaddingValues(
+            start = contentPadding.calculateLeftPadding(layoutDirection) + 16.dp,
+            end = contentPadding.calculateRightPadding(layoutDirection) + 16.dp,
+            top = contentPadding.calculateTopPadding() + 16.dp,
+            bottom = contentPadding.calculateBottomPadding() + 16.dp
+        )
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = combinedPadding,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Unit Selection Card
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(text = "Default Unit", style = MaterialTheme.typography.titleMedium)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            onClick = { viewModel.setUnit("mg/dL") },
-                            selected = unit == "mg/dL",
-                            label = { Text("mg/dL") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            modifier = Modifier.weight(1f)
-                        )
-                        FilterChip(
-                            onClick = { viewModel.setUnit("mmol/L") },
-                            selected = unit == "mmol/L",
-                            label = { Text("mmol/L") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
+            item { UnitSelectionCard(viewModel = viewModel, unit = unit) }
+            item { DataManagementCard(viewModel = viewModel, backupState = backupState) }
+            item { Spacer(modifier = Modifier.height(8.dp)) }
+            item { VersionFooter() }
+        }
+    }
+}
+
+@Composable
+private fun UnitSelectionCard(viewModel: ReadingViewModel, unit: String) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = "Default Unit", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    onClick = { viewModel.setUnit("mg/dL") },
+                    selected = unit == "mg/dL",
+                    label = { Text("mg/dL") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+                FilterChip(
+                    onClick = { viewModel.setUnit("mmol/L") },
+                    selected = unit == "mmol/L",
+                    label = { Text("mmol/L") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
             }
+        }
+    }
+}
 
-            // Data Backup & Restore Card
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Data Management",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
+@Composable
+private fun DataManagementCard(viewModel: ReadingViewModel, backupState: com.bloodsugar.app.ui.BackupUiState) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = "Data Management", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
 
-                    Text(
-                        text = "Keep your readings safe across app reinstalls",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            Text(
+                text = "Keep your readings safe across app reinstalls",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
-                    Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-                    // Backup Status
-                    if (backupState.hasBackupAvailable) {
-                        backupState.lastBackupInfo?.let { backupInfo ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "Last backup:",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                    Text(
-                                        text = "${backupInfo.readingCount} readings",
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Text(
-                                        text = java.text.SimpleDateFormat("MMM dd, yyyy HH:mm", java.util.Locale.getDefault())
-                                            .format(backupInfo.date),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(12.dp))
-                        }
-                    } else {
-                        Text(
-                            text = "No backup available",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                    }
-
-                    // Backup Actions
+            if (backupState.hasBackupAvailable) {
+                backupState.lastBackupInfo?.let { backupInfo ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // Create Backup Button
-                        Button(
-                            onClick = { viewModel.createBackup() },
-                            enabled = !backupState.isLoading,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            if (backupState.isLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
-                                Text("Backup Data")
-                            }
-                        }
-
-                        // Restore Button (only if backup available)
-                        if (backupState.hasBackupAvailable) {
-                            OutlinedButton(
-                                onClick = { viewModel.restoreFromBackup() },
-                                enabled = !backupState.isLoading,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Restore")
-                            }
-                        }
-                    }
-
-                    // Delete backup button (only if backup available)
-                    if (backupState.hasBackupAvailable) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        TextButton(
-                            onClick = { viewModel.deleteBackup() },
-                            enabled = !backupState.isLoading
-                        ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = "Last backup:", style = MaterialTheme.typography.bodySmall)
+                            Text(text = "${backupInfo.readingCount} readings", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "Delete Backup",
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Info about automatic backups
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer
-                        )
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text(
-                                text = "ℹ️ Automatic Backup",
-                                style = MaterialTheme.typography.titleSmall
-                            )
-                            Text(
-                                text = "Your data is automatically backed up whenever you add, edit, or delete readings. This backup is preserved when you uninstall and reinstall the app.",
+                                text = java.text.SimpleDateFormat("MMM dd, yyyy HH:mm", java.util.Locale.getDefault()).format(backupInfo.date),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+            } else {
+                Text(text = "No backup available", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { viewModel.createBackup() }, enabled = !backupState.isLoading, modifier = Modifier.weight(1f)) {
+                    if (backupState.isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Backup Data")
+                    }
+                }
+
+                if (backupState.hasBackupAvailable) {
+                    OutlinedButton(onClick = { viewModel.restoreFromBackup() }, enabled = !backupState.isLoading, modifier = Modifier.weight(1f)) {
+                        Text("Restore")
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
-            VersionFooter()
+            if (backupState.hasBackupAvailable) {
+                Spacer(modifier = Modifier.height(8.dp))
+                TextButton(onClick = { viewModel.deleteBackup() }, enabled = !backupState.isLoading) {
+                    Text("Delete Backup", color = MaterialTheme.colorScheme.error)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(text = "ℹ️ Automatic Backup", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "Your data is automatically backed up whenever you add, edit, or delete readings. This backup is preserved when you uninstall and reinstall the app.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
         }
     }
 }
