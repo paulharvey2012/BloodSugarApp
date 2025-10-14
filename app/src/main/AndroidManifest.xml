@@ -3,7 +3,10 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Permissions for backup/restore functionality -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <!-- READ_EXTERNAL_STORAGE only needed for Android 6-9 (API 23-28) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <!-- WRITE_EXTERNAL_STORAGE only needed for Android 6-9 (API 23-28) -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 

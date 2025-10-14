@@ -29,4 +29,8 @@ interface ReadingDao {
     // `date` falls within [startDate, endDate]. This allows tolerant duplicate detection.
     @Query("SELECT COUNT(*) FROM readings WHERE type = :type AND ABS(value - :value) <= :epsilon AND date BETWEEN :startDate AND :endDate")
     suspend fun countMatchingFuzzy(type: String, value: Double, startDate: Date, endDate: Date, epsilon: Double): Int
+
+    // Clear all readings (used before auto-restore if user wants to wipe existing history)
+    @Query("DELETE FROM readings")
+    suspend fun clearAllReadings()
 }

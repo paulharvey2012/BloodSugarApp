@@ -1,5 +1,7 @@
 package com.bloodsugar.app.ui
 
+import android.net.Uri
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -24,6 +26,10 @@ class ReadingViewModel(
 ) : ViewModel() {
 
     val allReadings: Flow<List<Reading>> = repository.getAllReadings()
+
+    // backup candidates state for debug UI
+    private val _backupCandidates = MutableStateFlow<List<com.bloodsugar.app.data.BackupCandidateInfo>>(emptyList())
+    val backupCandidates: StateFlow<List<com.bloodsugar.app.data.BackupCandidateInfo>> = _backupCandidates
 
     private val _uiState = MutableStateFlow(ReadingUiState())
     @Suppress("unused")
@@ -95,36 +101,70 @@ class ReadingViewModel(
                     // Database is empty, try to auto-restore from backup
                     backupService?.let { service ->
                         try {
-                            if (service.hasBackupAvailable()) {
-                                val result = service.restoreFromBackup()
-                                result.onSuccess { count ->
-                                    if (count > 0) {
+                            val backupInfo = try { service.getBackupInfo() } catch (_: Exception) { null }
+                            if (backupInfo != null) {
+                                // If the best candidate is a MediaStore Uri (content://) we should avoid
+                                // attempting an automatic restore here because some devices/providers
+                                // may deny read access without an explicit user-granted Uri permission.
+                                // In that case, prompt the user to import the backup manually instead
+                                // (the Import flow will persist permission).
+                                if (backupInfo.filePath.startsWith("content://")) {
+                                    _backupState.value = _backupState.value.copy(
+                                        error = "Auto-restore skipped: backup located in shared storage (content URI). Please import the backup file manually."
+                                    )
+                                } else {
+                                    try {
+                                        // Important: on first-run auto-restore we clear the existing DB so the backup becomes the full history.
+                                        val result = service.restoreFromBackup(clearExisting = true)
+                                        result.onSuccess { count ->
+                                            if (count > 0) {
+                                                val pathSnippet = when {
+                                                    backupInfo.filePath.isNotBlank() -> backupInfo.filePath
+                                                    else -> "(unknown location)"
+                                                }
+
+                                                val msg = if (backupInfo.readingCount != count) {
+                                                    "Automatically restored $count of ${backupInfo.readingCount} readings from previous installation (source: $pathSnippet)"
+                                                } else {
+                                                    "Automatically restored $count readings from previous installation (source: $pathSnippet)"
+                                                }
+
+                                                _backupState.value = _backupState.value.copy(
+                                                    message = msg,
+                                                    hasBackupAvailable = true,
+                                                    lastRestoreCount = count
+                                                )
+                                            }
+                                        }.onFailure { error ->
+                                            // If restore failed due to permissions, surface a clear message
+                                            val msg = error.message ?: "Unknown error"
+                                            if (msg.contains("Permission denied", ignoreCase = true)) {
+                                                _backupState.value = _backupState.value.copy(
+                                                    error = "Auto-restore failed due to missing storage permission. Please grant storage permission or import a backup file manually."
+                                                )
+                                            } else {
+                                                _backupState.value = _backupState.value.copy(
+                                                    error = "Auto-restore failed: $msg"
+                                                )
+                                            }
+                                        }
+                                    } catch (_: SecurityException) {
                                         _backupState.value = _backupState.value.copy(
-                                            message = "Automatically restored $count readings from previous installation",
-                                            hasBackupAvailable = true,
-                                            lastRestoreCount = count
+                                            error = "Auto-restore failed: permission denied while accessing backups. Please grant storage permission or import the backup manually."
                                         )
-                                    }
-                                }.onFailure { error ->
-                                    // If restore failed due to permissions, surface a clear message
-                                    val msg = error.message ?: "Unknown error"
-                                    if (msg.contains("Permission denied", ignoreCase = true)) {
-                                        _backupState.value = _backupState.value.copy(
-                                            error = "Auto-restore failed due to missing storage permission. Please grant storage permission or import a backup file manually."
-                                        )
-                                    } else {
-                                        _backupState.value = _backupState.value.copy(
-                                            error = "Auto-restore failed: $msg"
-                                        )
+                                    } catch (_: Exception) {
+                                        // Log or ignore - don't disrupt startup
                                     }
                                 }
+                            } else {
+                                // No backup info available; nothing to restore
                             }
                         } catch (_: SecurityException) {
                             _backupState.value = _backupState.value.copy(
                                 error = "Auto-restore failed: permission denied while accessing backups. Please grant storage permission or import the backup manually."
                             )
                         } catch (_: Exception) {
-                            // Log or ignore - don't disrupt startup
+                            // Log or ignore
                         }
                     }
                 }
@@ -282,7 +322,7 @@ class ReadingViewModel(
         }
     }
 
-    fun restoreFromUri(uri: android.net.Uri) {
+    fun restoreFromUri(uri: Uri) {
         viewModelScope.launch {
             _backupState.value = _backupState.value.copy(isLoading = true)
             backupService?.let { service ->
@@ -322,6 +362,79 @@ class ReadingViewModel(
                         lastRestoreCount = 0
                     )
                 }
+            }
+        }
+    }
+
+
+    // Fetch and publish backup candidate list (for debug screen)
+    fun fetchBackupCandidates() {
+        viewModelScope.launch {
+            try {
+                val list = backupService?.listBackupCandidates() ?: emptyList()
+                _backupCandidates.value = list
+            } catch (_: SecurityException) {
+                 _backupCandidates.value = emptyList()
+                 _backupState.value = _backupState.value.copy(
+                     error = "Permission denied while listing backup candidates"
+                 )
+             } catch (e: Exception) {
+                 _backupCandidates.value = emptyList()
+                 _backupState.value = _backupState.value.copy(
+                     error = "Failed to list backup candidates: ${e.message}"
+                 )
+             }
+         }
+     }
+
+    // Restore from a file path (filesystem) and optionally clear existing readings
+    fun restoreFromCandidateFilePath(filePath: String, clearExisting: Boolean = true) {
+        viewModelScope.launch {
+            _backupState.value = _backupState.value.copy(isLoading = true)
+            try {
+                val result = backupService?.restoreFromBackup(filePath = filePath, clearExisting = clearExisting)
+                result?.onSuccess { count ->
+                    _backupState.value = _backupState.value.copy(
+                        isLoading = false,
+                        message = "Successfully restored $count readings from backup",
+                        hasBackupAvailable = count > 0,
+                        lastRestoreCount = count
+                    )
+                    // refresh candidates/info after restore
+                    checkForExistingBackups()
+                }?.onFailure { error ->
+                    _backupState.value = _backupState.value.copy(isLoading = false, error = "Failed to restore backup: ${error.message}")
+                }
+            } catch (_: SecurityException) {
+                _backupState.value = _backupState.value.copy(isLoading = false, error = "Permission denied while restoring backup: ${'$'}{(null as SecurityException?)?.message}")
+            } catch (_: Exception) {
+                _backupState.value = _backupState.value.copy(isLoading = false, error = "Failed to restore backup: ${'$'}{(null as Exception?)?.message}")
+            }
+        }
+    }
+
+    // Restore from a MediaStore uri string
+    fun restoreFromCandidateUri(uriString: String, clearExisting: Boolean = true) {
+        viewModelScope.launch {
+            _backupState.value = _backupState.value.copy(isLoading = true)
+            try {
+                val uri = uriString.toUri()
+                val result = backupService?.restoreFromUri(uri, clearExisting = clearExisting)
+                result?.onSuccess { count ->
+                    _backupState.value = _backupState.value.copy(
+                        isLoading = false,
+                        message = "Successfully restored $count readings from backup",
+                        hasBackupAvailable = count > 0,
+                        lastRestoreCount = count
+                    )
+                    checkForExistingBackups()
+                }?.onFailure { error ->
+                    _backupState.value = _backupState.value.copy(isLoading = false, error = "Failed to restore backup: ${error.message}")
+                }
+            } catch (_: SecurityException) {
+                _backupState.value = _backupState.value.copy(isLoading = false, error = "Permission denied while restoring backup: ${'$'}{(null as SecurityException?)?.message}")
+            } catch (_: Exception) {
+                _backupState.value = _backupState.value.copy(isLoading = false, error = "Failed to restore backup: ${'$'}{(null as Exception?)?.message}")
             }
         }
     }

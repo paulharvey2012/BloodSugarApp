@@ -161,33 +161,46 @@ class BackupService(
         return result
     }
 
+    @Suppress("unused")
     // Search for a backup either in MediaStore (public Downloads) or filesystem fallbacks
     private fun findBackupSource(): Pair<File?, Uri?> {
         // 1) Look in MediaStore (modern, persistent across uninstall)
         try {
-            val mediaUri = findMediaStoreUriByName(autoBackupFileName) ?: findMediaStoreUriByName(backupFileName)
+            val mediaUri = try {
+                findMediaStoreUriByName(autoBackupFileName) ?: findMediaStoreUriByName(backupFileName)
+            } catch (se: SecurityException) {
+                // Don't rethrow: querying MediaStore for Downloads can fail under scoped storage
+                // on some devices. Log and continue to filesystem/app cache fallbacks instead.
+                Log.e(TAG, "Permission denied while querying MediaStore: ${se.message}")
+                null
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed while querying MediaStore: ${e.message}")
+                null
+            }
             if (mediaUri != null) return Pair(null, mediaUri)
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Permission denied while querying MediaStore: ${e.message}")
-            throw e
         } catch (_: Exception) {
-            Log.w(TAG, "Failed while querying MediaStore")
             // continue to other fallbacks
         }
 
         // 2) Look in public Downloads folder (pre-Q filesystem)
-        try {
-            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            val folder = File(downloads, backupFolderName)
-            val autoFile = File(folder, autoBackupFileName)
-            val manualFile = File(folder, backupFileName)
-            if (autoFile.exists()) return Pair(autoFile, null)
-            if (manualFile.exists()) return Pair(manualFile, null)
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Permission denied while accessing public Downloads folder: ${e.message}")
-            throw e
-        } catch (_: Exception) {
-            Log.w(TAG, "Failed while accessing public Downloads folder")
+        // Accessing the public Downloads filesystem directly is only valid on pre-Q devices.
+        // On Android Q+ the app should rely on MediaStore URIs (handled above) or the user
+        // providing a Uri via the Storage Access Framework. Avoid direct filesystem access
+        // on Q+ to prevent EACCES / SecurityException caused by scoped storage.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            try {
+                val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val folder = File(downloads, backupFolderName)
+                val autoFile = File(folder, autoBackupFileName)
+                val manualFile = File(folder, backupFileName)
+                if (autoFile.exists()) return Pair(autoFile, null)
+                if (manualFile.exists()) return Pair(manualFile, null)
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Permission denied while accessing public Downloads folder: ${e.message}")
+                throw e
+            } catch (_: Exception) {
+                Log.w(TAG, "Failed while accessing public Downloads folder")
+            }
         }
 
         // 3) Look in app-specific external folder
@@ -234,15 +247,17 @@ class BackupService(
         }
 
         // 2) Public Downloads folder (pre-Q)
-        try {
-            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            val folder = File(downloads, backupFolderName)
-            val autoFile = File(folder, autoBackupFileName)
-            val manualFile = File(folder, backupFileName)
-            if (autoFile.exists()) candidates.add(Pair(autoFile, null))
-            if (manualFile.exists()) candidates.add(Pair(manualFile, null))
-        } catch (_: Exception) {
-            // ignore
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            try {
+                val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val folder = File(downloads, backupFolderName)
+                val autoFile = File(folder, autoBackupFileName)
+                val manualFile = File(folder, backupFileName)
+                if (autoFile.exists()) candidates.add(Pair(autoFile, null))
+                if (manualFile.exists()) candidates.add(Pair(manualFile, null))
+            } catch (_: Exception) {
+                // ignore
+            }
         }
 
         // 3) App-specific external folder
@@ -276,10 +291,11 @@ class BackupService(
         // Capture folder paths into local vals to avoid smart-cast issues when using properties with custom getters
         val appExtPath: String? = try { appExternalFolder?.absolutePath } catch (_: Exception) { null }
         val cachePath: String = try { cacheFolder.absolutePath } catch (_: Exception) { "" }
-        // Selection tuple: (hasExportDate (1/0), timestampMillis, sourcePriority)
+        // Selection tuple: (hasExportDate (1/0), readingCount, timestampMillis, sourcePriority)
         // sourcePriority: 4=MediaStore(Uri),3=public Downloads,2=appExternal,1=cache
         var bestPair: Pair<File?, Uri?> = Pair(null, null)
         var bestHasExport = -1
+        var bestReadingCount = -1
         var bestTimestamp = Long.MIN_VALUE
         var bestSourcePriority = -1
 
@@ -295,6 +311,8 @@ class BackupService(
                     val parseResult = parseAppBackupWithInfo(jsonString)
 
                     val hadExport = if (parseResult.hadExportDate && parseResult.backup.exportDate > 0L) 1 else 0
+                    val readingCount = parseResult.backup.readings.size
+
                     val timestamp = if (hadExport == 1) {
                         parseResult.backup.exportDate
                     } else {
@@ -326,12 +344,14 @@ class BackupService(
                     }
 
                     val candidateId = uri?.toString() ?: file?.absolutePath ?: "(unknown)"
-                    Log.d(TAG, "Backup candidate: $candidateId -> hadExport=$hadExport, timestamp=$timestamp, src=$sourcePriority")
+                    Log.d(TAG, "Backup candidate: $candidateId -> hadExport=$hadExport, readings=$readingCount, timestamp=$timestamp, src=$sourcePriority")
 
-                    // Compare tuple (hadExport, timestamp, sourcePriority)
+                    // Prefer by: hadExport (1/0), then readingCount, then timestamp, then sourcePriority
                     val better = when {
                         hadExport > bestHasExport -> true
                         hadExport < bestHasExport -> false
+                        readingCount > bestReadingCount -> true
+                        readingCount < bestReadingCount -> false
                         timestamp > bestTimestamp -> true
                         timestamp < bestTimestamp -> false
                         sourcePriority > bestSourcePriority -> true
@@ -340,6 +360,7 @@ class BackupService(
 
                     if (better) {
                         bestHasExport = hadExport
+                        bestReadingCount = readingCount
                         bestTimestamp = timestamp
                         bestSourcePriority = sourcePriority
                         bestPair = Pair(file, uri)
@@ -356,7 +377,7 @@ class BackupService(
 
         if (bestPair.first != null || bestPair.second != null) {
             val chosenId = bestPair.second?.toString() ?: bestPair.first?.absolutePath ?: "(none)"
-            Log.i(TAG, "Selected latest backup: $chosenId (hadExport=$bestHasExport, timestamp=$bestTimestamp, src=$bestSourcePriority)")
+            Log.i(TAG, "Selected latest backup: $chosenId (hadExport=$bestHasExport, readings=$bestReadingCount, timestamp=$bestTimestamp, src=$bestSourcePriority)")
         } else {
             Log.i(TAG, "No backup candidates found by findLatestBackup()")
         }
@@ -382,50 +403,80 @@ class BackupService(
 
             val jsonString = json.encodeToString(backup)
 
-            // Try to write to public Downloads (MediaStore or public folder)
+            val fileNameToUse = if (includeAutoBackup) autoBackupFileName else backupFileName
+
+            // Track newly-created locations so cleanup won't remove them
+            val keepFilePaths = mutableSetOf<String>()
+            val keepUriStrings = mutableSetOf<String>()
+
+            // 1) Try to write to public Downloads (MediaStore on Q+, public folder on older devices)
             val wrotePublic = try {
-                writeStringToPublicDownloads(if (includeAutoBackup) autoBackupFileName else backupFileName, jsonString)
+                writeStringToPublicDownloads(fileNameToUse, jsonString)
             } catch (e: SecurityException) {
-                // Let caller know this was a permission issue
                 Log.e(TAG, "Permission denied while writing public backup: ${e.message}")
                 return@withContext Result.failure(Exception("Permission denied while writing public backup: ${e.message}", e))
             }
 
-            // Also write fallback copies to app-specific external and cache so the app can access them
+            // 2) Also write fallback copies to app-specific external and cache so the app can access them
             try {
                 appExternalFolder?.let { folder ->
                     if (!folder.exists()) folder.mkdirs()
-                    val manualFile = File(folder, backupFileName)
-                    manualFile.writeText(jsonString)
-                    if (includeAutoBackup) {
-                        val autoFile = File(folder, autoBackupFileName)
-                        autoFile.writeText(jsonString)
-                    }
+                    val dest = File(folder, fileNameToUse)
+                    dest.writeText(jsonString)
+                    keepFilePaths.add(dest.absolutePath)
                 }
             } catch (_: Exception) {
                 // ignore fallback write failures
             }
 
+            // 3) If we wrote to MediaStore, discover the newest matching URI and keep it
+            if (wrotePublic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    val uris = findAllMediaStoreUrisByName(fileNameToUse)
+                    if (uris.isNotEmpty()) {
+                        val best = uris.maxByOrNull { queryMediaStoreDate(it) ?: 0L }
+                        best?.let { keepUriStrings.add(it.toString()) }
+                    }
+                } catch (_: Exception) {
+                    // ignore
+                }
+            }
+
+            // 4) If we didn't write public (or even if we did), also write to cache so there is a local copy
+            try {
+                if (!cacheFolder.exists()) cacheFolder.mkdirs()
+                val cacheFile = File(cacheFolder, fileNameToUse)
+                cacheFile.writeText(jsonString)
+                keepFilePaths.add(cacheFile.absolutePath)
+            } catch (_: Exception) {
+                // ignore
+            }
+
+            // 5) Cleanup: delete other backup candidates that aren't part of keep sets
+            try {
+                deleteOtherBackupCandidates(fileNameToUse, keepFilePaths = keepFilePaths, keepUriStrings = keepUriStrings)
+            } catch (_: Exception) {
+                // ignore cleanup failures
+            }
+
+            // 6) Return result indicating where backup was placed
             if (wrotePublic) {
                 return@withContext Result.success("Backup created with ${backupReadings.size} readings in public Downloads")
             }
 
-            // If public write failed, try writing to app-specific external or cache
-            try {
-                val destFolder = appExternalFolder ?: cacheFolder
-                if (!destFolder.exists()) destFolder.mkdirs()
-                val destFile = File(destFolder, if (includeAutoBackup) autoBackupFileName else backupFileName)
-                destFile.writeText(jsonString)
-                return@withContext Result.success("Backup created with ${backupReadings.size} readings at: ${destFile.absolutePath} (note: saved to app storage, may be removed on uninstall)")
-            } catch (e: Exception) {
-                return@withContext Result.failure(Exception("Failed to write backup: ${e.message}", e))
+            // If public write failed, try returning the app-specific or cache path if available
+            val fallbackPath = keepFilePaths.firstOrNull()
+            if (fallbackPath != null) {
+                return@withContext Result.success("Backup created with ${backupReadings.size} readings at: $fallbackPath (note: saved to app storage, may be removed on uninstall)")
             }
+
+            return@withContext Result.failure(Exception("Failed to write backup to any location"))
         } catch (e: Exception) {
             Result.failure(Exception("Backup failed: ${e.message}", e))
         }
     }
 
-    suspend fun restoreFromBackup(filePath: String? = null): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun restoreFromBackup(filePath: String? = null, clearExisting: Boolean = false): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val (file, uri) = if (filePath != null) {
                 Pair(File(filePath), null)
@@ -461,9 +512,27 @@ class BackupService(
             val backup = parseAppBackupWithInfo(jsonString).backup
 
             var restoredCount = 0
+
+            // If requested, clear existing readings first so the backup becomes the sole source of truth
+            if (clearExisting) {
+                try {
+                    repository.clearAllReadings()
+                } catch (_: Exception) {
+                    // Continue anyway; insertion will still try and dedupe
+                }
+            }
+
             backup.readings.forEach { backupReading ->
                 try {
-                    val inserted = repository.insertReadingIfNotExists(backupReading.toReading())
+                    // If we've cleared existing readings above, it's fine to insert directly; otherwise rely on dedupe
+                    val inserted = if (clearExisting) {
+                        try {
+                            repository.insertReading(backupReading.toReading())
+                            true
+                        } catch (_: Exception) { false }
+                    } else {
+                        repository.insertReadingIfNotExists(backupReading.toReading())
+                    }
                     if (inserted) restoredCount++
                 } catch (_: Exception) {
                     // continue
@@ -479,7 +548,7 @@ class BackupService(
         }
     }
 
-    suspend fun restoreFromUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun restoreFromUri(uri: Uri, clearExisting: Boolean = false): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val input: InputStream = try {
                 context.contentResolver.openInputStream(uri)
@@ -493,9 +562,25 @@ class BackupService(
             val backup = parseAppBackupWithInfo(jsonString).backup
 
             var restoredCount = 0
+
+            if (clearExisting) {
+                try {
+                    repository.clearAllReadings()
+                } catch (_: Exception) {
+                    // ignore
+                }
+            }
+
             backup.readings.forEach { backupReading ->
                 try {
-                    val inserted = repository.insertReadingIfNotExists(backupReading.toReading())
+                    val inserted = if (clearExisting) {
+                        try {
+                            repository.insertReading(backupReading.toReading())
+                            true
+                        } catch (_: Exception) { false }
+                    } else {
+                        repository.insertReadingIfNotExists(backupReading.toReading())
+                    }
                     if (inserted) restoredCount++
                 } catch (_: Exception) {
                     // continue on insertion errors
@@ -612,19 +697,21 @@ class BackupService(
                 // continue to filesystem fallbacks
             }
 
-            // 2) Public Downloads folder (pre-Q)
-            try {
-                val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                val folder = File(downloads, backupFolderName)
-                val autoFile = File(folder, autoBackupFileName)
-                val manualFile = File(folder, backupFileName)
-                if (autoFile.exists() && autoFile.delete()) deletedAny = true
-                if (manualFile.exists() && manualFile.delete()) deletedAny = true
-            } catch (e: SecurityException) {
-                Log.e(TAG, "Permission denied while deleting public Downloads backup: ${e.message}")
-                throw e
-            } catch (_: Exception) {
-                // ignore
+            // 2) Public Downloads folder
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                try {
+                    val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    val folder = File(downloads, backupFolderName)
+                    val autoFile = File(folder, autoBackupFileName)
+                    val manualFile = File(folder, backupFileName)
+                    if (autoFile.exists() && autoFile.delete()) deletedAny = true
+                    if (manualFile.exists() && manualFile.delete()) deletedAny = true
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "Permission denied while deleting public Downloads backup: ${e.message}")
+                    throw e
+                } catch (_: Exception) {
+                    // ignore
+                }
             }
 
             // 3) App-specific external folder
@@ -800,13 +887,218 @@ class BackupService(
                         return ms
                     }
                 }
-                null
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to query MediaStore date for $uri: ${e.message}")
+            null
+        } catch (_: Exception) {
             null
         }
     }
+
+    // Debug-friendly summary of a candidate backup file/uri
+    data class BackupCandidateInfo(
+        val filePath: String?,          // filesystem path if applicable
+        val uriString: String?,         // MediaStore uri string if applicable
+        val readingCount: Int?,         // number of readings parsed (null if parse failed)
+        val hadExportDate: Boolean,     // whether the JSON included an exportDate
+        val exportDateMillis: Long?,    // exportDate if present
+        val sourcePriority: Int,        // source priority used in selection
+        val parseError: String?         // parse error message if any
+    )
+
+    // Collect detailed info about all found backup candidates for debugging/inspection.
+    // This returns a list of BackupCandidateInfo describing each candidate location.
+    suspend fun listBackupCandidates(): List<BackupCandidateInfo> = withContext(Dispatchers.IO) {
+        val result = mutableListOf<BackupCandidateInfo>()
+        val candidates = findBackupCandidates()
+
+        // Capture folder paths for sourcePriority resolution
+        val appExtPath: String? = try { appExternalFolder?.absolutePath } catch (_: Exception) { null }
+        val cachePath: String = try { cacheFolder.absolutePath } catch (_: Exception) { "" }
+
+        candidates.forEach { (file, uri) ->
+            var filePath: String? = null
+            var uriString: String? = null
+            var readingCount: Int? = null
+            var hadExport = false
+            var exportDate: Long? = null
+            var parseError: String? = null
+            val sourcePriority = when {
+                uri != null -> 4
+                file != null && appExtPath != null && file.absolutePath.startsWith(appExtPath) -> 2
+                file != null && cachePath.isNotEmpty() && file.absolutePath.startsWith(cachePath) -> 1
+                file != null -> 3
+                else -> 0
+            }
+
+            try {
+                val jsonString = when {
+                    uri != null -> {
+                        uriString = uri.toString()
+                        try {
+                            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        } catch (e: SecurityException) {
+                            throw e
+                        }
+                    }
+                    file != null -> {
+                        filePath = file.absolutePath
+                        if (!file.exists()) throw Exception("file not found")
+                        file.readText()
+                    }
+                    else -> null
+                } ?: run {
+                    parseError = "Unable to read candidate"
+                    result.add(BackupCandidateInfo(filePath, uriString, null, false, null, sourcePriority, parseError))
+                    return@forEach
+                }
+
+                try {
+                    val parseResult = parseAppBackupWithInfo(jsonString)
+                    readingCount = parseResult.backup.readings.size
+                    hadExport = parseResult.hadExportDate && parseResult.backup.exportDate > 0L
+                    if (hadExport) exportDate = parseResult.backup.exportDate
+                } catch (e: Exception) {
+                    parseError = e.message ?: "parse error"
+                }
+            } catch (se: SecurityException) {
+                parseError = "permission denied: ${se.message}"
+            } catch (e: Exception) {
+                if (parseError == null) parseError = e.message ?: "io error"
+            }
+
+            result.add(
+                BackupCandidateInfo(
+                    filePath = filePath,
+                    uriString = uriString,
+                    readingCount = readingCount,
+                    hadExportDate = hadExport,
+                    exportDateMillis = exportDate,
+                    sourcePriority = sourcePriority,
+                    parseError = parseError
+                )
+            )
+        }
+
+        return@withContext result
+    }
+
+    // Delete other backup files/uris matching the given filename that are NOT in the keep sets.
+    // This is used after creating a new backup to remove old duplicates while being resilient to
+    // permission issues on various Android versions.
+    private fun deleteOtherBackupCandidates(
+        fileNameToUse: String,
+        keepFilePaths: Set<String>,
+        keepUriStrings: Set<String>,
+        maxToKeep: Int = 3
+    ) {
+        // Build a unified list of candidates across all locations
+        data class Candidate(val file: File?, val uri: Uri?, val id: String, val timestamp: Long)
+
+        val allCandidates = mutableListOf<Candidate>()
+
+        val seenIds = mutableSetOf<String>()
+
+        val candidates = try { findBackupCandidates() } catch (_: Exception) { emptyList<Pair<File?, Uri?>>() }
+
+        candidates.forEachIndexed { idx, (file, uri) ->
+            try {
+                val id = uri?.toString() ?: file?.absolutePath ?: "(unknown_$idx)"
+                if (seenIds.contains(id)) return@forEachIndexed
+                seenIds.add(id)
+
+                var ts: Long = Long.MIN_VALUE
+
+                // Prefer exportDate inside JSON if available
+                try {
+                    val jsonString = when {
+                        uri != null -> context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        file != null -> if (file.exists()) file.readText() else null
+                        else -> null
+                    }
+                    if (jsonString != null) {
+                        try {
+                            val pr = parseAppBackupWithInfo(jsonString)
+                            if (pr.hadExportDate && pr.backup.exportDate > 0L) ts = pr.backup.exportDate
+                        } catch (_: Exception) {
+                            // ignore parsing errors and fall back to metadata
+                        }
+                    }
+                } catch (_: SecurityException) {
+                    // permission denied reading body -> fall back to metadata
+                } catch (_: Exception) {
+                    // ignore
+                }
+
+                if (ts == Long.MIN_VALUE) {
+                    try {
+                        if (file != null) {
+                            val lm = file.lastModified()
+                            if (lm > 0) ts = lm
+                        }
+                    } catch (_: Exception) {}
+
+                    try {
+                        if (uri != null) {
+                            val ms = queryMediaStoreDate(uri)
+                            if (ms != null && ms > ts) ts = ms
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                // If still unknown, set to minimum so it sorts last
+                if (ts == Long.MIN_VALUE) ts = Long.MIN_VALUE
+
+                allCandidates.add(Candidate(file, uri, id, ts))
+            } catch (_: Exception) {
+                // continue
+            }
+        }
+
+        // Partition according to keep sets provided (these are absolute file paths or Uri strings)
+        val mustKeep = allCandidates.filter { c -> keepFilePaths.contains(c.id) || keepUriStrings.contains(c.id) }
+        val others = allCandidates.filter { c -> !mustKeep.contains(c) }
+
+        // Decide how many of the others we should keep so total kept <= maxToKeep
+        val remainingSlots = (maxToKeep - mustKeep.size).coerceAtLeast(0)
+
+        // Sort others by timestamp desc and keep top 'remainingSlots'
+        val sortedOthers = others.sortedWith(compareByDescending<Candidate> { it.timestamp }.thenBy { it.id })
+        val toKeepFromOthers = sortedOthers.take(remainingSlots).map { it.id }.toSet()
+
+        // All candidates to delete are those not in mustKeep and not in toKeepFromOthers
+        val toDelete = allCandidates.filter { c -> !mustKeep.any { it.id == c.id } && !toKeepFromOthers.contains(c.id) }
+
+        // Perform deletions
+        toDelete.forEach { c ->
+            try {
+                if (c.uri != null) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        try {
+                            context.contentResolver.delete(c.uri, null, null)
+                            Log.d(TAG, "Deleted MediaStore backup Uri: ${c.id}")
+                        } catch (se: SecurityException) {
+                            Log.e(TAG, "Permission denied deleting MediaStore Uri ${c.id}: ${se.message}")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to delete MediaStore Uri ${c.id}: ${e.message}")
+                        }
+                    }
+                } else if (c.file != null) {
+                    try {
+                        if (c.file.exists() && c.file.delete()) {
+                            Log.d(TAG, "Deleted backup file: ${c.id}")
+                        }
+                    } catch (se: SecurityException) {
+                        Log.e(TAG, "Permission denied deleting file ${c.id}: ${se.message}")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to delete file ${c.id}: ${e.message}")
+                    }
+                }
+            } catch (_: Exception) {
+                // ignore individual failures
+            }
+        }
+    }
+
 }
 
 data class BackupInfo(

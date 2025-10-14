@@ -35,6 +35,11 @@ class ReadingRepository(private val readingDao: ReadingDao) {
         return readingDao.getReadingById(id)
     }
 
+    // Clear all readings from the database
+    suspend fun clearAllReadings() {
+        readingDao.clearAllReadings()
+    }
+
     // Insert the reading only if a matching reading (type, value, date) does not already exist.
     // Returns true if inserted, false if skipped as duplicate.
     suspend fun insertReadingIfNotExists(reading: Reading): Boolean {

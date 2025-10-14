@@ -229,5 +229,7 @@ private fun mockPreviewDao(): com.bloodsugar.app.data.ReadingDao {
         override suspend fun getReadingById(id: Long): Reading? = null
         // Implement fuzzy count for preview
         override suspend fun countMatchingFuzzy(type: String, value: Double, startDate: java.util.Date, endDate: java.util.Date, epsilon: Double): Int = 0
+        // Implement clearAllReadings added to the DAO
+        override suspend fun clearAllReadings() {}
     }
 }
