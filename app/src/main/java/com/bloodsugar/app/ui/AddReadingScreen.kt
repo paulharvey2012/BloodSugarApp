@@ -345,16 +345,16 @@ fun AddReadingScreen(viewModel: ReadingViewModel, navController: NavController) 
             }
         }
 
-        item {
-            // Save Button
-            Button(
-                onClick = { saveReading() },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = value.isNotBlank()
-            ) {
-                Text("Save")
-            }
-        }
+//        item {
+//            // Save Button
+//            Button(
+//                onClick = { saveReading() },
+//                modifier = Modifier.fillMaxWidth(),
+//                enabled = value.isNotBlank()
+//            ) {
+//                Text("Save")
+//            }
+//        }
 
         // Footer
         item {
