@@ -163,13 +163,37 @@ class BackupService(
         return result
     }
 
+    // Return all MediaStore URIs that are inside the app's backup relative path (e.g. Download/BloodSugarApp/*)
+    private fun findAllMediaStoreUrisInBackupFolder(): List<Uri> {
+        val result = mutableListOf<Uri>()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return result
+        try {
+            val resolver = context.contentResolver
+            val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH)
+            val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+            val selectionArgs = arrayOf("%${backupFolderName}%")
+            resolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idIndex)
+                    result.add(Uri.withAppendedPath(collection, id.toString()))
+                }
+            }
+        } catch (_: Exception) {
+            // ignore failures
+        }
+        return result
+    }
+
     @Suppress("unused")
     // Search for a backup either in MediaStore (public Downloads) or filesystem fallbacks
     private fun findBackupSource(): Pair<File?, Uri?> {
         // 1) Look in MediaStore (modern, persistent across uninstall)
         try {
             val mediaUri = try {
-                findMediaStoreUriByName(autoBackupFileName) ?: findMediaStoreUriByName(backupFileName)
+                // Prefer canonical filenames but also include any file inside the app's backup folder
+                findMediaStoreUriByName(autoBackupFileName) ?: findMediaStoreUriByName(backupFileName) ?: findAllMediaStoreUrisInBackupFolder().firstOrNull()
             } catch (se: SecurityException) {
                 // Don't rethrow: querying MediaStore for Downloads can fail under scoped storage
                 // on some devices. Log and continue to filesystem/app cache fallbacks instead.
@@ -238,53 +262,112 @@ class BackupService(
     private fun findBackupCandidates(): List<Pair<File?, Uri?>> {
         val candidates = mutableListOf<Pair<File?, Uri?>>()
 
-        // 1) MediaStore (API Q+): check both filenames and include all matching URIs
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                findAllMediaStoreUrisByName(autoBackupFileName).forEach { candidates.add(Pair(null, it)) }
-                findAllMediaStoreUrisByName(backupFileName).forEach { candidates.add(Pair(null, it)) }
+        // 1) MediaStore (API Q+): include canonical filenames and any files in the app backup folder
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val urisByNameAuto = findAllMediaStoreUrisByName(autoBackupFileName)
+                for (u in urisByNameAuto) {
+                    candidates.add(Pair(null, u))
+                }
+
+                val urisByNameManual = findAllMediaStoreUrisByName(backupFileName)
+                for (u in urisByNameManual) {
+                    candidates.add(Pair(null, u))
+                }
+
+                val urisInFolder = findAllMediaStoreUrisInBackupFolder()
+                for (u in urisInFolder) {
+                    candidates.add(Pair(null, u))
+                }
+            } catch (_: Exception) {
+                // ignore MediaStore failures
             }
-        } catch (_: Exception) {
-            // ignore
         }
 
-        // 2) Public Downloads folder (pre-Q)
+        // 2) Public Downloads folder (pre-Q): include any files inside the app's backup folder
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             try {
                 val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 val folder = File(downloads, backupFolderName)
-                val autoFile = File(folder, autoBackupFileName)
-                val manualFile = File(folder, backupFileName)
-                if (autoFile.exists()) candidates.add(Pair(autoFile, null))
-                if (manualFile.exists()) candidates.add(Pair(manualFile, null))
+                if (folder.exists() && folder.isDirectory) {
+                    val files = folder.listFiles()
+                    if (files != null) {
+                        for (f in files) {
+                            if (f.isFile) {
+                                candidates.add(Pair(f, null))
+                            }
+                        }
+                    }
+                } else {
+                    val autoFile = File(folder, autoBackupFileName)
+                    val manualFile = File(folder, backupFileName)
+                    val checkList = arrayOf(autoFile, manualFile)
+                    for (f in checkList) {
+                        if (f.exists()) {
+                            candidates.add(Pair(f, null))
+                        }
+                    }
+                }
             } catch (_: Exception) {
-                // ignore
+                // ignore filesystem failures
             }
         }
 
-        // 3) App-specific external folder
+        // 3) App-specific external folder: include all files inside
         try {
-            appExternalFolder?.let { folder ->
+            val folder = try { appExternalFolder } catch (_: Exception) { null }
+            if (folder != null) {
+                if (folder.exists() && folder.isDirectory) {
+                    val files = folder.listFiles()
+                    if (files != null) {
+                        for (f in files) {
+                            if (f.isFile) {
+                                candidates.add(Pair(f, null))
+                            }
+                        }
+                    }
+                } else {
+                    val autoFile = File(folder, autoBackupFileName)
+                    val manualFile = File(folder, backupFileName)
+                    val checkList = arrayOf(autoFile, manualFile)
+                    for (f in checkList) {
+                        if (f.exists()) {
+                            candidates.add(Pair(f, null))
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        // 4) Cache folder: include all files inside
+        try {
+            val folder = try { cacheFolder } catch (_: Exception) { null }
+            if (folder != null && folder.exists() && folder.isDirectory) {
+                val files = folder.listFiles()
+                if (files != null) {
+                    for (f in files) {
+                        if (f.isFile) {
+                            candidates.add(Pair(f, null))
+                        }
+                    }
+                }
+            } else if (folder != null) {
                 val autoFile = File(folder, autoBackupFileName)
                 val manualFile = File(folder, backupFileName)
-                if (autoFile.exists()) candidates.add(Pair(autoFile, null))
-                if (manualFile.exists()) candidates.add(Pair(manualFile, null))
+                val checkList = arrayOf(autoFile, manualFile)
+                for (f in checkList) {
+                    if (f.exists()) {
+                        candidates.add(Pair(f, null))
+                    }
+                }
             }
         } catch (_: Exception) {
             // ignore
         }
 
-        // 4) Cache folder
-        try {
-            val autoFile = File(cacheFolder, autoBackupFileName)
-            val manualFile = File(cacheFolder, backupFileName)
-            if (autoFile.exists()) candidates.add(Pair(autoFile, null))
-            if (manualFile.exists()) candidates.add(Pair(manualFile, null))
-        } catch (_: Exception) {
-            // ignore
-        }
-
-        return candidates
+        return candidates.distinctBy { (file, uri) -> uri?.toString() ?: file?.absolutePath }
     }
 
     // Find the most recent backup by reading and parsing each candidate's exportDate.
@@ -388,7 +471,6 @@ class BackupService(
     }
 
     // Always write to a single canonical backup filename so there is exactly one overwriteable backup file.
-    // The includeAutoBackup parameter is kept for backwards compatibility but ignored.
     suspend fun createBackup(includeAutoBackup: Boolean = true): Result<String> = withContext(Dispatchers.IO) {
         try {
             // Prepare backup data
@@ -407,6 +489,9 @@ class BackupService(
 
             val jsonString = json.encodeToString(backup)
 
+            // Reference includeAutoBackup for compatibility (no-op) to avoid unused parameter warnings.
+            Log.d(TAG, "createBackup called with includeAutoBackup=$includeAutoBackup")
+
             // Use a single canonical filename for all backups so manual and automatic backups overwrite the same file.
             val fileNameToUse = backupFileName
 
@@ -419,7 +504,14 @@ class BackupService(
                 null
             }
 
+            // Keep sets for cleanup
+            val keepFilePaths = mutableSetOf<String>()
+            val keepUriStrings = mutableSetOf<String>()
+
             if (writtenPublicUri != null) {
+                // Keep the URI we wrote
+                keepUriStrings.add(writtenPublicUri.toString())
+
                 // Optionally clean duplicate MediaStore entries for the same filename, keep only the uri we wrote
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     try {
@@ -438,6 +530,13 @@ class BackupService(
                     }
                 }
 
+                // Run broader cleanup to remove any other backup files that might have different names
+                try {
+                    deleteOtherBackupCandidates(fileNameToUse = fileNameToUse, keepFilePaths = keepFilePaths, keepUriStrings = keepUriStrings, maxToKeep = 0)
+                } catch (_: Exception) {
+                    // ignore cleanup failures
+                }
+
                 return@withContext Result.success("Backup created with ${backupReadings.size} readings in public Downloads")
             }
 
@@ -447,6 +546,16 @@ class BackupService(
                     if (!folder.exists()) folder.mkdirs()
                     val dest = File(folder, fileNameToUse)
                     dest.writeText(jsonString)
+                    // keep this path
+                    keepFilePaths.add(dest.absolutePath)
+
+                    // cleanup others
+                    try {
+                        deleteOtherBackupCandidates(fileNameToUse = fileNameToUse, keepFilePaths = keepFilePaths, keepUriStrings = keepUriStrings, maxToKeep = 0)
+                    } catch (_: Exception) {
+                        // ignore
+                    }
+
                     return@withContext Result.success("Backup created with ${backupReadings.size} readings at: ${dest.absolutePath} (note: saved to app storage, may be removed on uninstall)")
                 }
             } catch (_: Exception) {
@@ -458,6 +567,16 @@ class BackupService(
                 if (!cacheFolder.exists()) cacheFolder.mkdirs()
                 val cacheFile = File(cacheFolder, fileNameToUse)
                 cacheFile.writeText(jsonString)
+                // keep this path
+                keepFilePaths.add(cacheFile.absolutePath)
+
+                // cleanup others
+                try {
+                    deleteOtherBackupCandidates(fileNameToUse = fileNameToUse, keepFilePaths = keepFilePaths, keepUriStrings = keepUriStrings, maxToKeep = 0)
+                } catch (_: Exception) {
+                    // ignore
+                }
+
                 return@withContext Result.success("Backup created with ${backupReadings.size} readings at: ${cacheFile.absolutePath} (note: saved to cache)")
             } catch (_: Exception) {
                 // ignore
@@ -745,6 +864,7 @@ class BackupService(
     }
 
     // Clean up old backups - DISABLED. This app now keeps a single backup (overwrite behavior) so cleanup isn't required.
+    @Suppress("unused")
     suspend fun cleanupOldBackups(): Result<Int> = withContext(Dispatchers.IO) {
         Log.i(TAG, "cleanupOldBackups() is disabled: app now maintains a single backup and overwrites it.")
         return@withContext Result.success(0)
