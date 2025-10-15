@@ -52,11 +52,11 @@ fun SettingsScreen(viewModel: ReadingViewModel) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = combinedPadding,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             item { UnitSelectionCard(viewModel = viewModel, unit = unit) }
             item { DataManagementCard(viewModel = viewModel, backupState = backupState) }
-            item { Spacer(modifier = Modifier.height(8.dp)) }
+            item { Spacer(modifier = Modifier.height(10.dp)) }
             item { VersionFooter() }
         }
     }
@@ -95,7 +95,7 @@ private fun UnitSelectionCard(viewModel: ReadingViewModel, unit: String) {
 }
 
 @Composable
-private fun DataManagementCard(viewModel: ReadingViewModel, backupState: com.bloodsugar.app.ui.BackupUiState) {
+private fun DataManagementCard(viewModel: ReadingViewModel, backupState: BackupUiState) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(text = "Data Management", style = MaterialTheme.typography.titleMedium)

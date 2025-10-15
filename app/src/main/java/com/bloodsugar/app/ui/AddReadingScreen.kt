@@ -177,7 +177,7 @@ fun AddReadingScreen(viewModel: ReadingViewModel, navController: NavController) 
         state = listState,
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
@@ -328,7 +328,7 @@ fun AddReadingScreen(viewModel: ReadingViewModel, navController: NavController) 
                         text = "Notes",
                         style = MaterialTheme.typography.titleMedium
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     OutlinedTextField(
                         value = notes,
                         onValueChange = { notes = it },
@@ -394,7 +394,7 @@ private fun mockReadingDao(): com.bloodsugar.app.data.ReadingDao {
         override suspend fun deleteReading(reading: com.bloodsugar.app.data.Reading) {}
         override suspend fun getReadingById(id: Long): com.bloodsugar.app.data.Reading? = null
         // New DAO method used for deduplication in restores (fuzzy match)
-        override suspend fun countMatchingFuzzy(type: String, value: Double, startDate: java.util.Date, endDate: java.util.Date, epsilon: Double): Int = 0
+        override suspend fun countMatchingFuzzy(type: String, value: Double, startDate: Date, endDate: Date, epsilon: Double): Int = 0
         // Implement clearAllReadings added to the DAO
         override suspend fun clearAllReadings() {}
     }
