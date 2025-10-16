@@ -1,20 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <!--
-        Explicitly list your Room/SQLite database files to avoid restoring unexpected files
-        (which can cause 'permission denied' if they live on external storage).
-        The Room database filename used by this project is 'reading_database'.
-        If you use Write-Ahead Logging (WAL), include the -wal and -shm files too.
+        Exclude the app's Room/SQLite database files from Android Auto Backup.
+        If the system restores the DB on reinstall, the app will find a non-empty
+        database and will skip the one-time auto-import of the latest backup.
+        By excluding the DB here, we ensure the database is fresh on a reinstall
+        and allow the app's own backup/restore logic to run and import the latest
+        backup file.
     -->
 
-    <!-- Actual DB files for this app -->
-    <include domain="database" path="reading_database" />
-    <include domain="database" path="reading_database-wal" />
-    <include domain="database" path="reading_database-shm" />
+    <!-- Exclude actual DB files so system auto-backup doesn't restore them -->
+    <exclude domain="database" path="reading_database" />
+    <exclude domain="database" path="reading_database-wal" />
+    <exclude domain="database" path="reading_database-shm" />
 
     <!--
-        If you truly need to include everything under the database directory, you can
-        revert to including the entire database directory, but that is less safe:
-        <include domain="database" path="." />
+        If you need to exclude the entire database directory instead, use:
+        <exclude domain="database" path="." />
     -->
 </full-backup-content>

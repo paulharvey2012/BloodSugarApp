@@ -39,6 +39,10 @@ class ReadingViewModel(
     private val _backupState = MutableStateFlow(BackupUiState())
     val backupState: StateFlow<BackupUiState> = _backupState
 
+    // Debug candidate list exposed to UI for one-tap restore testing
+    private val _backupCandidates = MutableStateFlow<List<String>>(emptyList())
+    val backupCandidates: StateFlow<List<String>> = _backupCandidates
+
     init {
         unitPreferences?.let { prefs ->
             viewModelScope.launch {
@@ -96,8 +100,16 @@ class ReadingViewModel(
                             // First check if any backup is actually available - this now returns false for permission issues
                             val hasBackup = service.hasBackupAvailable()
                             if (!hasBackup) {
-                                // No backup files exist - this is a fresh install, exit silently
-                                return@let
+                                // No backup files exist - attempt a filesystem-focused fallback using debug candidate info.
+                                // This helps with cases where MediaStore checks return false due to scoped storage but
+                                // a readable file may still exist in Downloads/BloodSugarApp.
+                                try {
+                                    val tried = tryAutoImportFromDebugCandidates(service)
+                                    if (!tried) return@let
+                                } catch (_: Exception) {
+                                    // Fall through silently if fallback fails
+                                    return@let
+                                }
                             }
 
                             // Only proceed if we confirmed backups exist
@@ -169,6 +181,64 @@ class ReadingViewModel(
             } catch (_: Exception) {
                 // Silently fail - don't disrupt app startup
             }
+        }
+    }
+
+    // Attempt a filesystem-focused automatic import using debug candidate info.
+    // Returns true if an import attempt was made (success or failure), false if no suitable filesystem candidate found.
+    private suspend fun tryAutoImportFromDebugCandidates(service: BackupService): Boolean {
+        return try {
+            val list = try { service.debugGetCandidatesInfo() } catch (_: Exception) { null }
+            if (list.isNullOrEmpty()) return false
+
+            // Look for the first candidate that looks like a filesystem path (not a content:// URI).
+            val filesystemCandidate = list.mapNotNull { entry ->
+                val payload = when {
+                    entry.startsWith("candidate=") -> entry.substringAfter("candidate=")
+                    entry.startsWith("selected_latest=") -> entry.substringAfter("selected_latest=")
+                    else -> entry
+                }
+                // Exclude MediaStore/content URIs
+                if (payload.startsWith("content://", ignoreCase = true)) null
+                else payload
+            }.firstOrNull { it.isNotBlank() }
+
+            if (filesystemCandidate.isNullOrBlank()) return false
+
+            // Attempt to restore from the filesystem path (clear existing DB so the backup becomes the full history)
+            try {
+                val result = service.restoreFromBackup(filePath = filesystemCandidate, clearExisting = true)
+                result.onSuccess { count ->
+                    if (count > 0) {
+                        _backupState.value = _backupState.value.copy(
+                            message = "Automatically restored $count readings from backup file: $filesystemCandidate",
+                            hasBackupAvailable = true,
+                            lastRestoreCount = count
+                        )
+                    }
+                }.onFailure { error ->
+                    val msg = error.message ?: "Unknown error"
+                    if (msg.contains("Permission denied", ignoreCase = true)) {
+                        _backupState.value = _backupState.value.copy(
+                            error = "Auto-import failed due to missing storage permission. Please grant storage permission or import the backup file manually."
+                        )
+                    } else {
+                        _backupState.value = _backupState.value.copy(
+                            error = "Auto-import failed: $msg"
+                        )
+                    }
+                }
+            } catch (_: SecurityException) {
+                _backupState.value = _backupState.value.copy(
+                    error = "Auto-import failed due to missing storage permission. Please grant storage permission or import the backup file manually."
+                )
+            } catch (_: Exception) {
+                // ignore other failures
+            }
+
+            true
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -447,6 +517,68 @@ class ReadingViewModel(
 
     fun clearMessage() {
         _backupState.value = _backupState.value.copy(message = null, error = null, lastRestoreCount = null)
+    }
+
+    // Debug candidate functions
+
+    // Load debug candidate strings from BackupService (uses debugGetCandidatesInfo)
+    fun loadBackupCandidates() {
+        viewModelScope.launch {
+            try {
+                val list = try { backupService?.debugGetCandidatesInfo() } catch (_: Exception) { null }
+                _backupCandidates.value = list ?: listOf("No candidates or backupService==null")
+            } catch (_: Exception) {
+                _backupCandidates.value = listOf("Failed to load candidates")
+            }
+        }
+    }
+
+    // Restore from a debug candidate string (e.g. "candidate=/sdcard/Download/.." or "selected_latest=content://...")
+    fun restoreFromCandidateString(candidate: String, clearExisting: Boolean = true) {
+        // Normalize string to path/uri
+        val payload = when {
+            candidate.startsWith("candidate=") -> candidate.substringAfter("candidate=")
+            candidate.startsWith("selected_latest=") -> candidate.substringAfter("selected_latest=")
+            else -> candidate
+        }
+
+        if (payload.startsWith("content://", ignoreCase = true)) {
+            // Use existing ViewModel helper to restore from URI string
+            restoreFromCandidateUri(payload, clearExisting = clearExisting)
+        } else {
+            // Treat as filesystem path
+            restoreFromCandidateFilePath(payload, clearExisting = clearExisting)
+        }
+    }
+
+    // Copy latest filesystem candidate into app folder (if any) and restore from it.
+    fun copyLatestFilesystemCandidateAndRestore(clearExisting: Boolean = true) {
+        viewModelScope.launch {
+            if (backupService == null) return@launch
+            _backupState.value = _backupState.value.copy(isLoading = true)
+            try {
+                val copiedPath = try { backupService.copyLatestFilesystemCandidateToAppFolder() } catch (_: SecurityException) {
+                    _backupState.value = _backupState.value.copy(isLoading = false, error = "Failed to copy backup: permission denied")
+                    null
+                }
+
+                if (!copiedPath.isNullOrBlank()) {
+                    // Trigger restore using the filesystem path
+                    val result = backupService.restoreFromBackup(filePath = copiedPath, clearExisting = clearExisting)
+                    result.onSuccess { count ->
+                        _backupState.value = _backupState.value.copy(isLoading = false, message = "Restored $count readings from copied backup", lastRestoreCount = count, hasBackupAvailable = count > 0)
+                        checkForExistingBackups()
+                    }
+                    result.onFailure { error ->
+                        _backupState.value = _backupState.value.copy(isLoading = false, error = "Failed to restore copied backup: ${error.message}")
+                    }
+                } else {
+                    _backupState.value = _backupState.value.copy(isLoading = false, error = "No filesystem backup candidate available to copy")
+                }
+            } catch (_: Exception) {
+                _backupState.value = _backupState.value.copy(isLoading = false, error = "Failed to copy/restore backup")
+            }
+        }
     }
 }
 

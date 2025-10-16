@@ -129,17 +129,24 @@ class BackupService(
 
     private fun findMediaStoreUriByName(fileName: String): Uri? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
-        val resolver = context.contentResolver
-        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
-        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
-        val selectionArgs = arrayOf(fileName)
-        resolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
-            val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-            if (cursor.moveToFirst()) {
-                val id = cursor.getLong(idIndex)
-                return Uri.withAppendedPath(collection, id.toString())
+        try {
+            val resolver = context.contentResolver
+            val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
+            // Query a limited projection and filter results in Kotlin to be case-insensitive
+            resolver.query(collection, projection, null, null, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val target = fileName.lowercase(Locale.US)
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)) ?: continue
+                    if (name.lowercase(Locale.US) == target) {
+                        val id = cursor.getLong(idIndex)
+                        return Uri.withAppendedPath(collection, id.toString())
+                    }
+                }
             }
+        } catch (_: Exception) {
+            // ignore and return null
         }
         return null
     }
@@ -148,17 +155,75 @@ class BackupService(
     private fun findAllMediaStoreUrisByName(fileName: String): List<Uri> {
         val result = mutableListOf<Uri>()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return result
-        val resolver = context.contentResolver
-        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
-        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
-        val selectionArgs = arrayOf(fileName)
-        resolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
-            val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-            while (cursor.moveToNext()) {
-                val id = cursor.getLong(idIndex)
-                result.add(Uri.withAppendedPath(collection, id.toString()))
+        try {
+            val resolver = context.contentResolver
+            val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
+            resolver.query(collection, projection, null, null, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val target = fileName.lowercase(Locale.US)
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)) ?: continue
+                    if (name.lowercase(Locale.US) == target) {
+                        val id = cursor.getLong(idIndex)
+                        result.add(Uri.withAppendedPath(collection, id.toString()))
+                    }
+                }
             }
+        } catch (_: Exception) {
+            // ignore failures
+        }
+        // Additional attempt: query MediaStore.Files for broader compatibility with some OEMs/providers
+        try {
+            val resolver = context.contentResolver
+            val collection = MediaStore.Files.getContentUri("external")
+            val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
+            resolver.query(collection, projection, null, null, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val target = fileName.lowercase(Locale.US)
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)) ?: continue
+                    if (name.lowercase(Locale.US) == target) {
+                        val id = cursor.getLong(idIndex)
+                        result.add(Uri.withAppendedPath(collection, id.toString()))
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        // Targeted selection query: look for display names containing 'bloodsugar' to help some providers
+        try {
+            val resolver = context.contentResolver
+            val coll = MediaStore.Files.getContentUri("external")
+            val proj = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
+            val sel = "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?"
+            val selArgs = arrayOf("%bloodsugar%")
+            resolver.query(coll, proj, sel, selArgs, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idIndex)
+                    result.add(Uri.withAppendedPath(coll, id.toString()))
+                }
+            }
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        // Filesystem fallback: attempt to list public Downloads/BloodSugarApp on all API levels (may fail under scoped storage)
+        try {
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val folder = File(downloads, backupFolderName)
+            if (folder.exists() && folder.isDirectory) {
+                folder.listFiles()?.forEach { f ->
+                    if (f.isFile && f.name.equals(fileName, ignoreCase = true)) {
+                        result.add(Uri.fromFile(f))
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // ignore filesystem failures
         }
         return result
     }
@@ -171,17 +236,76 @@ class BackupService(
             val resolver = context.contentResolver
             val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
             val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH)
-            val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
-            val selectionArgs = arrayOf("%${backupFolderName}%")
-            resolver.query(collection, projection, selection, selectionArgs, null)?.use { cursor ->
+            // Query all entries in Downloads and filter by relative path case-insensitively in Kotlin
+            resolver.query(collection, projection, null, null, null)?.use { cursor ->
                 val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val relPathIndex = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
                 while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idIndex)
-                    result.add(Uri.withAppendedPath(collection, id.toString()))
+                    val relPath = cursor.getString(relPathIndex) ?: continue
+                    if (relPath.lowercase(Locale.US).contains(backupFolderName.lowercase(Locale.US))) {
+                        val id = cursor.getLong(idIndex)
+                        result.add(Uri.withAppendedPath(collection, id.toString()))
+                    }
                 }
             }
         } catch (_: Exception) {
             // ignore failures
+        }
+        // Additional attempt: search MediaStore.Files for entries whose relative path or display name includes the backup folder or filenames
+        try {
+            val resolver = context.contentResolver
+            val collection = MediaStore.Files.getContentUri("external")
+            val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH)
+            resolver.query(collection, projection, null, null, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val relPathIndex = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                val nameIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                while (cursor.moveToNext()) {
+                    val relPath = cursor.getString(relPathIndex) ?: ""
+                    val name = cursor.getString(nameIndex) ?: ""
+                    if (relPath.lowercase(Locale.US).contains(backupFolderName.lowercase(Locale.US)) ||
+                        name.lowercase(Locale.US).contains(backupFolderName.lowercase(Locale.US))) {
+                        val id = cursor.getLong(idIndex)
+                        result.add(Uri.withAppendedPath(collection, id.toString()))
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        // Targeted selection: find files whose relative path or name includes the backup folder name
+        try {
+            val resolver = context.contentResolver
+            val coll = MediaStore.Files.getContentUri("external")
+            val proj = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH)
+            val sel = "(${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?) OR (${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?)"
+            val arg = "%${backupFolderName}%"
+            val selArgs = arrayOf(arg, arg)
+            resolver.query(coll, proj, sel, selArgs, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idIndex)
+                    result.add(Uri.withAppendedPath(coll, id.toString()))
+                }
+            }
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        // Filesystem fallback: attempt to list public Downloads/BloodSugarApp even on Q+ (may fail under scoped storage)
+        try {
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val folder = File(downloads, backupFolderName)
+            if (folder.exists() && folder.isDirectory) {
+                folder.listFiles()?.forEach { f ->
+                    if (f.isFile) {
+                        result.add(Uri.fromFile(f))
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // ignore filesystem failures
         }
         return result
     }
@@ -213,20 +337,59 @@ class BackupService(
         // On Android Q+ the app should rely on MediaStore URIs (handled above) or the user
         // providing a Uri via the Storage Access Framework. Avoid direct filesystem access
         // on Q+ to prevent EACCES / SecurityException caused by scoped storage.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            try {
-                val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                val folder = File(downloads, backupFolderName)
-                val autoFile = File(folder, autoBackupFileName)
-                val manualFile = File(folder, backupFileName)
-                if (autoFile.exists()) return Pair(autoFile, null)
-                if (manualFile.exists()) return Pair(manualFile, null)
-            } catch (e: SecurityException) {
-                Log.e(TAG, "Permission denied while accessing public Downloads folder: ${e.message}")
-                throw e
-            } catch (_: Exception) {
-                Log.w(TAG, "Failed while accessing public Downloads folder")
+        // Attempt filesystem access to the public Downloads backup folder as a best-effort
+        // fallback even on Q+. This may fail under scoped storage, but in many testing
+        // or OEM environments direct access is available and helps discover manually
+        // copied backup files.
+        try {
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val folder = File(downloads, backupFolderName)
+            // If the canonical-cased folder doesn't exist, look for a folder with matching name ignoring case
+            val resolvedFolder = if (folder.exists()) {
+                folder
+            } else {
+                try {
+                    downloads.listFiles()?.firstOrNull { it.isDirectory && it.name.equals(backupFolderName, ignoreCase = true) }
+                } catch (_: Exception) {
+                    null
+                }
             }
+             val autoFile = File(folder, autoBackupFileName)
+             val manualFile = File(folder, backupFileName)
+            // Check explicit canonical paths first
+            if (autoFile.exists()) return Pair(autoFile, null)
+            if (manualFile.exists()) return Pair(manualFile, null)
+            // Also include any other files in the resolved folder (handles case variants)
+            if (resolvedFolder != null && resolvedFolder.exists() && resolvedFolder.isDirectory) {
+                val files = resolvedFolder.listFiles()
+                if (files != null) {
+                    for (f in files) {
+                        if (f.isFile) return Pair(f, null)
+                    }
+                }
+            }
+
+            // Additional: as a last-ditch, scan the top-level Downloads folder for any files containing 'bloodsugar'
+            try {
+                if (downloads.exists() && downloads.isDirectory) {
+                    val matches = downloads.listFiles()?.filter { it.isFile && it.name.contains("bloodsugar", ignoreCase = true) }
+                    if (!matches.isNullOrEmpty()) {
+                        // Prefer the newest match by lastModified
+                        val newest = matches.maxByOrNull { it.lastModified() }
+                        if (newest != null) {
+                            // Return the newest found filesystem match from this fallback scan
+                            return Pair(newest, null)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // ignore
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission denied while accessing public Downloads folder: ${e.message}")
+            // Do not rethrow; continue to other fallbacks
+        } catch (_: Exception) {
+            Log.w(TAG, "Failed while accessing public Downloads folder")
         }
 
         // 3) Look in app-specific external folder
@@ -261,6 +424,50 @@ class BackupService(
     // Collect all candidate backup File/Uri locations (both auto and manual filenames).
     private fun findBackupCandidates(): List<Pair<File?, Uri?>> {
         val candidates = mutableListOf<Pair<File?, Uri?>>()
+        Log.d(TAG, "findBackupCandidates: starting candidate discovery")
+
+        // Best-effort: rename a known misspelled Downloads folder to the canonical one
+        // This is placed early to make the canonical folder available for the rest of the scan.
+        try {
+            val downloadsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (downloadsRoot != null && downloadsRoot.exists() && downloadsRoot.isDirectory) {
+                try {
+                    val misspelled = downloadsRoot.listFiles()?.firstOrNull { it.isDirectory && it.name.equals("bloodsuagrapp", ignoreCase = true) }
+                    if (misspelled != null) {
+                        val target = File(downloadsRoot, backupFolderName)
+                        if (!target.exists()) {
+                            try {
+                                if (misspelled.renameTo(target)) {
+                                    Log.i(TAG, "Renamed misspelled backup folder to: ${target.absolutePath}")
+                                } else {
+                                    // Fallback: copy files into the canonical folder then delete source
+                                    try {
+                                        if (!target.exists()) target.mkdirs()
+                                        misspelled.listFiles()?.forEach { child ->
+                                            try {
+                                                if (child.isFile) child.copyTo(File(target, child.name), overwrite = true)
+                                            } catch (_: Exception) {
+                                                // ignore individual copy failures
+                                            }
+                                        }
+                                        try { misspelled.deleteRecursively() } catch (_: Exception) { }
+                                        Log.i(TAG, "Copied contents from misspelled folder to canonical folder: ${target.absolutePath}")
+                                    } catch (_: Exception) {
+                                        // ignore fallback failures
+                                    }
+                                }
+                            } catch (se: SecurityException) {
+                                Log.e(TAG, "Permission denied while renaming/copying misspelled folder: ${se.message}")
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    // ignore errors while probing the downloads root
+                }
+            }
+        } catch (_: Exception) {
+            // ignore
+        }
 
         // 1) MediaStore (API Q+): include canonical filenames and any files in the app backup folder
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -289,8 +496,18 @@ class BackupService(
             try {
                 val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 val folder = File(downloads, backupFolderName)
-                if (folder.exists() && folder.isDirectory) {
-                    val files = folder.listFiles()
+                // If the canonical-cased folder doesn't exist, look for a folder with matching name ignoring case
+                val resolvedFolder = if (folder.exists()) {
+                    folder
+                } else {
+                    try {
+                        downloads.listFiles()?.firstOrNull { it.isDirectory && it.name.equals(backupFolderName, ignoreCase = true) }
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                if (resolvedFolder != null && resolvedFolder.exists() && resolvedFolder.isDirectory) {
+                    val files = resolvedFolder.listFiles()
                     if (files != null) {
                         for (f in files) {
                             if (f.isFile) {
@@ -307,6 +524,23 @@ class BackupService(
                             candidates.add(Pair(f, null))
                         }
                     }
+                }
+
+                // Additional: as a last-ditch, scan the top-level Downloads folder for any files containing 'bloodsugar'
+                try {
+                    if (downloads.exists() && downloads.isDirectory) {
+                        val matches = downloads.listFiles()?.filter { it.isFile && it.name.contains("bloodsugar", ignoreCase = true) }
+                        if (!matches.isNullOrEmpty()) {
+                            // Prefer the newest match by lastModified
+                            val newest = matches.maxByOrNull { it.lastModified() }
+                            if (newest != null) {
+                                // Return the newest found filesystem match from this fallback scan
+                                return listOf(Pair(newest, null))
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    // ignore
                 }
             } catch (_: Exception) {
                 // ignore filesystem failures
@@ -367,12 +601,65 @@ class BackupService(
             // ignore
         }
 
+        // Extra broad fallback: scan the top-level Downloads folder for any files whose
+        // name contains "blood" or "sugar". This helps detect backups placed in
+        // folders with slightly different names (typos, variants) like "bloodsuagrapp".
+        try {
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+
+             if (downloads != null && downloads.exists() && downloads.isDirectory) {
+                 downloads.listFiles()?.forEach { f ->
+                     try {
+                         if (f.isFile && (
+                                 f.name.contains("blood", ignoreCase = true) ||
+                                 f.name.contains("sugar", ignoreCase = true) ||
+                                 f.name.contains("bsapp", ignoreCase = true)
+                             )) {
+                                 // Avoid adding duplicates already discovered
+                                 if (!candidates.any { (cf, _) -> cf?.absolutePath == f.absolutePath }) {
+                                     candidates.add(Pair(f, null))
+                                 }
+                         }
+                         // Also check for directories that look like backup folders and add their files
+                         if (f.isDirectory && (
+                                 f.name.contains("blood", ignoreCase = true) ||
+                                 f.name.contains("sugar", ignoreCase = true)
+                             )) {
+                             f.listFiles()?.forEach { inner ->
+                                 if (inner.isFile) {
+                                     if (!candidates.any { (cf, _) -> cf?.absolutePath == inner.absolutePath }) {
+                                         candidates.add(Pair(inner, null))
+                                     }
+                                 }
+                             }
+                         }
+                     } catch (_: Exception) {
+                         // ignore individual file failures
+                     }
+                 }
+             }
+         } catch (_: Exception) {
+             // ignore
+         }
+
+        // Log discovered candidates for debugging
+        try {
+            Log.d(TAG, "findBackupCandidates: discovered ${candidates.size} candidates")
+            candidates.forEach { (file, uri) ->
+                val id = uri?.toString() ?: file?.absolutePath ?: "(unknown)"
+                Log.d(TAG, "candidate: $id")
+            }
+        } catch (_: Exception) {
+            // ignore logging failures
+        }
+
         return candidates.distinctBy { (file, uri) -> uri?.toString() ?: file?.absolutePath }
     }
 
     // Find the most recent backup by reading and parsing each candidate's exportDate.
     private suspend fun findLatestBackup(): Pair<File?, Uri?> = withContext(Dispatchers.IO) {
         val candidates = findBackupCandidates()
+        Log.d(TAG, "findLatestBackup: evaluating ${candidates.size} candidates")
         // Capture folder paths into local vals to avoid smart-cast issues when using properties with custom getters
         val appExtPath: String? = try { appExternalFolder?.absolutePath } catch (_: Exception) { null }
         val cachePath: String = try { cacheFolder.absolutePath } catch (_: Exception) { "" }
@@ -468,6 +755,27 @@ class BackupService(
         }
 
         return@withContext bestPair
+    }
+
+    // Public debug helper: return a list of candidate identifiers and the selected latest backup.
+    // This method is safe to call from a coroutine and has no side-effects.
+    @Suppress("unused")
+    suspend fun debugGetCandidatesInfo(): List<String> = withContext(Dispatchers.IO) {
+        val out = mutableListOf<String>()
+        try {
+            val candidates = findBackupCandidates()
+            out.add("candidates_count=${candidates.size}")
+            candidates.forEach { (file, uri) ->
+                val id = uri?.toString() ?: file?.absolutePath ?: "(unknown)"
+                out.add("candidate=$id")
+            }
+            val (bestFile, bestUri) = findLatestBackup()
+            val bestId = bestUri?.toString() ?: bestFile?.absolutePath ?: "(none)"
+            out.add("selected_latest=$bestId")
+        } catch (e: Exception) {
+            out.add("debug_error=${e.message}")
+        }
+        return@withContext out
     }
 
     // Always write to a single canonical backup filename so there is exactly one overwriteable backup file.
@@ -991,6 +1299,56 @@ class BackupService(
             }
         } catch (_: Exception) {
             // ignore cleanup failures
+        }
+    }
+
+    // Public helper: if the latest selected backup is a filesystem File (not a content Uri),
+    // copy it into the app-specific external folder so the app can reliably read it and
+    // restore from it. Returns the destination absolute path when successful, or null.
+    suspend fun copyLatestFilesystemCandidateToAppFolder(): String? = withContext(Dispatchers.IO) {
+        try {
+            val (file, uri) = findLatestBackup()
+            // We only handle filesystem files here; if best candidate is a content:// Uri, bail out
+            if (uri != null) return@withContext null
+            if (file == null) return@withContext null
+
+            if (!file.exists()) return@withContext null
+
+            // Prefer appExternalFolder (deleted on uninstall) so the file persists while installed
+            val destFolder = try { appExternalFolder ?: cacheFolder } catch (_: Exception) { cacheFolder }
+            try {
+                if (!destFolder.exists()) destFolder.mkdirs()
+            } catch (_: Exception) {
+                // ignore mkdir failures and continue - copy may still fail
+            }
+
+            val dest = File(destFolder, file.name)
+
+            // If it's already in the app's external folder, just return path
+            try {
+                val srcPath = try { file.canonicalPath } catch (_: Exception) { file.absolutePath }
+                val dstPath = try { dest.canonicalPath } catch (_: Exception) { dest.absolutePath }
+                if (srcPath == dstPath) return@withContext dest.absolutePath
+            } catch (_: Exception) {
+                // ignore path compare failures
+            }
+
+            try {
+                file.copyTo(dest, overwrite = true)
+                return@withContext dest.absolutePath
+            } catch (se: SecurityException) {
+                Log.e(TAG, "Permission denied while copying backup file: ${se.message}")
+                throw se
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to copy backup file to app folder: ${e.message}")
+                return@withContext null
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission denied while preparing local copy: ${e.message}")
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "copyLatestFilesystemCandidateToAppFolder failed: ${e.message}")
+            return@withContext null
         }
     }
 }

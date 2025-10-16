@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -26,10 +27,12 @@ import com.bloodsugar.app.ui.BloodSugarApp
 import com.bloodsugar.app.ui.ReadingViewModel
 import com.bloodsugar.app.ui.ReadingViewModelFactory
 import com.bloodsugar.app.ui.theme.BloodSugarAppTheme
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
+
+    private val TAG = "MainActivity"
 
     private lateinit var activityViewModel: ReadingViewModel
     private var pendingAutoRestore = false
@@ -57,8 +60,20 @@ class MainActivity : ComponentActivity() {
         // SharedPreferences so the restore is only attempted once after install.
         val prefs = getSharedPreferences("com.bloodsugar.app.prefs", MODE_PRIVATE)
         val PREF_AUTO_RESTORE_DONE = "auto_restore_done_v1"
-        val alreadyDone = prefs.getBoolean(PREF_AUTO_RESTORE_DONE, false)
+        // Use a no-backup file as the authoritative marker so the "already done" flag
+        // isn't restored by Android Auto Backup on reinstall. Fall back to the
+        // SharedPreferences value for backward compatibility.
+        val noBackupDir = try { applicationContext.noBackupFilesDir } catch (_: Exception) { filesDir }
+        val markerFile = File(noBackupDir, PREF_AUTO_RESTORE_DONE)
+        // Rely on the no-backup marker file as the authoritative source. Do NOT use the
+        // SharedPreferences boolean for the initial decision because SharedPreferences
+        // can be restored by Android Auto Backup on reinstall, which would incorrectly
+        // skip the one-time auto-restore. We still write the preference for
+        // backward-compatibility, but the marker file controls the behavior.
+        val alreadyDone = markerFile.exists()
+        Log.d(TAG, "noBackupDir=${noBackupDir?.absolutePath}, markerExists=$alreadyDone")
         val shouldAutoRestore = !alreadyDone
+        Log.d(TAG, "shouldAutoRestore=$shouldAutoRestore")
 
         val database = AppDatabase.getDatabase(this)
         val repository = ReadingRepository(database.readingDao())
@@ -66,6 +81,26 @@ class MainActivity : ComponentActivity() {
         val unitPrefs = UnitPreferences(applicationContext.dataStore)
         // Initialize BackupService for data persistence across reinstalls
         backupService = BackupService(applicationContext, repository)
+
+        // Debug intent: if launched with dump_candidates=true, fetch candidate info and log it
+        if (intent?.getBooleanExtra("dump_candidates", false) == true) {
+            lifecycleScope.launch {
+                try {
+                    // Use the service-provided debug helper to list all discovered candidates and the chosen latest
+                    val debugInfo: List<String> = try {
+                        backupService?.debugGetCandidatesInfo() ?: listOf("backupService=null")
+                    } catch (e: Exception) {
+                        listOf("debug_error=${e.message}")
+                    }
+
+                     debugInfo.forEach { Log.d(TAG, it) }
+                     val first = debugInfo.firstOrNull() ?: "No debug info"
+                     try { Toast.makeText(this@MainActivity, first, Toast.LENGTH_LONG).show() } catch (_: Exception) {}
+                 } catch (e: Exception) {
+                     Log.e(TAG, "Failed to dump backup candidates: ${e.message}")
+                 }
+             }
+         }
 
         // Create ViewModel without auto-restore initially - we'll handle permissions first
         val viewModelFactory = ReadingViewModelFactory(repository, unitPrefs, backupService, autoRestoreOnInit = false)
@@ -98,7 +133,12 @@ class MainActivity : ComponentActivity() {
         // immediately so this auto-restore attempt only happens once after reinstall.
         if (shouldAutoRestore) {
             try {
-                prefs.edit { putBoolean(PREF_AUTO_RESTORE_DONE, true) }
+                // Do NOT mark the one-time auto-restore as done here. Instead delay
+                // creating the no-backup marker and writing SharedPreferences until
+                // we either successfully restore or we actively prompt the user to
+                // import a backup file (SAF picker). This avoids skipping the
+                // restore when the attempt fails due to permission or other issues.
+                Log.d(TAG, "Starting auto-restore flow: checking permissions and backup candidates")
             } catch (_: Exception) {
                 // ignore prefs write failures
             }
@@ -125,7 +165,17 @@ class MainActivity : ComponentActivity() {
                 val restored = state.lastRestoreCount
                 if (!restoreMarked && shouldAutoRestore && restored != null && restored > 0) {
                     try {
+                        // Successful restore: mark as completed (SharedPreferences + no-backup marker)
                         prefs.edit { putBoolean(PREF_AUTO_RESTORE_DONE, true) }
+                        try {
+                            if (!markerFile.exists()) {
+                                noBackupDir?.let { dir -> if (!dir.exists()) dir.mkdirs() }
+                                markerFile.createNewFile()
+                                Log.d(TAG, "Created no-backup marker at ${markerFile.absolutePath} after successful restore")
+                            }
+                        } catch (_: Exception) {
+                            // ignore marker file creation failures
+                        }
                     } catch (_: Exception) {}
                     restoreMarked = true
 
@@ -161,6 +211,18 @@ class MainActivity : ComponentActivity() {
                         || err.contains("shared storage", ignoreCase = true)
                     )) {
                      importPrompted = true
+                     // Before launching the picker, persist the one-time marker
+                     // so the picker prompt is only shown once after reinstall.
+                     try {
+                         prefs.edit { putBoolean(PREF_AUTO_RESTORE_DONE, true) }
+                         if (!markerFile.exists()) {
+                             noBackupDir?.let { dir -> if (!dir.exists()) dir.mkdirs() }
+                             markerFile.createNewFile()
+                            Log.d(TAG, "Created no-backup marker at ${markerFile.absolutePath} before launching SAF picker")
+                         }
+                     } catch (_: Exception) {
+                         // ignore marker/prefs write failures
+                     }
                      // Launch the picker to let the user import a backup
                      ImportInvoker.launcher?.invoke()
                  }
@@ -181,6 +243,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkPermissionsAndAutoRestore() {
+        Log.d(TAG, "checkPermissionsAndAutoRestore called")
         // For Android 10+ (API 29+), we don't need READ_EXTERNAL_STORAGE for MediaStore
         // For Android 6-9 (API 23-28), we need READ_EXTERNAL_STORAGE
         val needsPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
@@ -197,31 +260,47 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun attemptAutoRestore() {
+        Log.d(TAG, "attemptAutoRestore called")
         pendingAutoRestore = false
         lifecycleScope.launch {
             try {
-                // Check if database is empty by getting first emission
-                val readings = activityViewModel.allReadings.first()
-                if (readings.isEmpty()) {
-                    // Database is empty, choose an appropriate restore strategy.
-                    try {
-                        val info = try { backupService?.getBackupInfo() } catch (_: SecurityException) { null }
-                        if (info != null) {
-                            val path = info.filePath
-                            if (path.startsWith("content://", ignoreCase = true)) {
-                                // Best candidate is a content URI — open the import picker so the user
-                                // can grant persistent read permission via SAF.
-                                ImportInvoker.launcher?.invoke()
-                                return@launch
+                // Regardless of whether the current database contains readings,
+                // attempt to import the latest available backup when the no-backup
+                // marker is missing (this indicates a reinstall/first-run).
+                // BackupService and the repository will dedupe existing entries.
+                try {
+                    val info = try { backupService?.getBackupInfo() } catch (_: SecurityException) { null }
+                    Log.d(TAG, "backupInfo=$info")
+                    if (info != null) {
+                        val path = info.filePath
+                        Log.d(TAG, "Best backup candidate path=$path")
+                        if (path.startsWith("content://", ignoreCase = true)) {
+                            // Best candidate is a content URI. Try restoring directly
+                            // first — some MediaStore URIs are readable without further
+                            // user interaction on modern devices. If that direct restore
+                            // fails due to permission, the ViewModel will update
+                            // backupState with an error and MainActivity's observer
+                            // will prompt the user with the SAF picker (and create
+                            // the one-time marker at that point).
+                            try {
+                                Log.d(TAG, "Attempting direct restore from content URI candidate")
+                                activityViewModel.restoreFromBackup()
+                            } catch (_: Exception) {
+                                // If a direct attempt to start restore throws, fall back
+                                // to prompting the user via SAF (observer will handle it).
+                                Log.d(TAG, "Direct restore attempt threw; observer will handle prompting")
                             }
+                            return@launch
                         }
-                    } catch (_: Exception) {
-                        // ignore and fall through to direct restore attempt
                     }
-
-                    // Either no special handling needed or fallback: trigger auto-restore
-                    activityViewModel.restoreFromBackup()
+                } catch (_: Exception) {
+                    // ignore and fall through to direct restore attempt
+                    Log.d(TAG, "Exception while getting backup info; will attempt direct restore anyway")
                 }
+
+                // Either no special handling needed or fallback: trigger auto-restore
+                Log.d(TAG, "Triggering restoreFromBackup()")
+                activityViewModel.restoreFromBackup()
              } catch (_: Exception) {
                  // Silently fail - don't disrupt app startup
              }

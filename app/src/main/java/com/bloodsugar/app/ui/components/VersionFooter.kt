@@ -20,7 +20,7 @@ fun VersionFooter(modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(16.dp),
+            .padding(10.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(

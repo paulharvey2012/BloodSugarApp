@@ -155,6 +155,41 @@ private fun DataManagementCard(viewModel: ReadingViewModel, backupState: BackupU
                 }
             }
 
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Debug: candidate discovery and one-tap restore helpers
+            val candidates by viewModel.backupCandidates.collectAsStateWithLifecycle(initialValue = emptyList())
+
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { viewModel.loadBackupCandidates() }, modifier = Modifier.weight(1f)) {
+                        Text("Refresh Candidates")
+                    }
+                    Button(onClick = { viewModel.copyLatestFilesystemCandidateAndRestore() }, modifier = Modifier.weight(1f)) {
+                        Text("Copy & Restore Latest")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (candidates.isEmpty()) {
+                    Text(text = "No candidates loaded", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    // Show each candidate and allow one-tap restore
+                    candidates.forEach { candidate ->
+                        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Row(modifier = Modifier.padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(text = candidate, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                OutlinedButton(onClick = { viewModel.restoreFromCandidateString(candidate) }) {
+                                    Text("Restore")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(8.dp))
 
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
