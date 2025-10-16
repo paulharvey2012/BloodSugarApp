@@ -18,6 +18,13 @@ if (versionPropsFile.exists()) {
     versionProps.store(new FileOutputStream(versionPropsFile), null)
 }
 
+// Load keystore properties if present (keystore.properties should be added to .gitignore)
+def keystorePropertiesFile = rootProject.file('keystore.properties')
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 def versionCodeFromProps = Integer.parseInt(versionProps.getProperty('VERSION_CODE'))
 def versionNameFromProps = versionProps.getProperty('VERSION_NAME')
 
@@ -42,10 +49,36 @@ android {
         buildConfigField "int", "VERSION_CODE", "${versionCode}"
     }
 
+    // Signing config for release (reads from keystore.properties when present)
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                if (keystoreProperties['storeFile']) {
+                    storeFile file(keystoreProperties['storeFile'])
+                }
+                // Allow explicit store type (jks or pkcs12). If not provided, Gradle/Java will use defaults
+                if (keystoreProperties['storeType']) {
+                    storeType keystoreProperties['storeType']
+                }
+                if (keystoreProperties['storePassword']) {
+                    storePassword keystoreProperties['storePassword']
+                }
+                if (keystoreProperties['keyAlias']) {
+                    keyAlias keystoreProperties['keyAlias']
+                }
+                if (keystoreProperties['keyPassword']) {
+                    keyPassword keystoreProperties['keyPassword']
+                }
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Attach signing config if available
+            signingConfig signingConfigs.release
         }
     }
     compileOptions {

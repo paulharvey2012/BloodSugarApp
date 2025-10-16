@@ -53,6 +53,9 @@ captures/
 #*.jks
 #*.keystore
 
+# Ignore keystore properties containing secrets
+/keystore.properties
+
 # External native build folder generated in Android Studio 2.2 and later
 .externalNativeBuild
 .cxx/
